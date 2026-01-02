@@ -1,0 +1,9 @@
+{
+    "api_key": "YOUR_MUDREX_API_KEY",
+    "api_secret": "YOUR_MUDREX_API_SECRET",
+    "telegram_bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "signal_channel_id": -1001234567890,
+    "trade_amount_usdt": 50.0,
+    "max_leverage": 20,
+    "testnet": false
+}
