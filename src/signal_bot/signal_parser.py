@@ -4,9 +4,13 @@ Signal Parser - Parse trading signals from Telegram messages.
 Signal Formats:
     /signal LONG BTCUSDT entry=50000 sl=49000 tp=52000 lev=10x
     /signal SHORT ETHUSDT market sl=3800 tp=3500 lev=5x
-    /update SIG-20260103-001 sl=49500
-    /close SIG-20260103-001
-    /partial SIG-20260103-001 50%
+    
+Signal ID Format: SIG-DDMMYY-SYMBOL (e.g., SIG-030126-BTCUSDT)
+
+Update/Close Commands:
+    /update SIG-030126-BTCUSDT sl=49500
+    /close SIG-030126-BTCUSDT
+    /partial SIG-030126-BTCUSDT 50%
 """
 
 import re
@@ -65,8 +69,8 @@ class SignalParseError(Exception):
 class SignalParser:
     """Parse trading signals from Telegram messages."""
     
-    # Signal counter for generating IDs
-    _counter = 0
+    # Signal ID pattern: SIG-DDMMYY-SYMBOL (e.g., SIG-030126-BTCUSDT)
+    SIGNAL_ID_PATTERN = r"SIG-\d{6}-[A-Z0-9]+"
     
     # Regex patterns
     SIGNAL_PATTERN = re.compile(
@@ -75,17 +79,17 @@ class SignalParser:
     )
     
     UPDATE_PATTERN = re.compile(
-        r"/update\s+(SIG-\d{8}-\d{3})\s+(.+)",
+        rf"/update\s+({SIGNAL_ID_PATTERN})\s+(.+)",
         re.IGNORECASE
     )
     
     CLOSE_PATTERN = re.compile(
-        r"/close\s+(SIG-\d{8}-\d{3})",
+        rf"/close\s+({SIGNAL_ID_PATTERN})",
         re.IGNORECASE
     )
     
     PARTIAL_PATTERN = re.compile(
-        r"/partial\s+(SIG-\d{8}-\d{3})\s+(\d+)%?",
+        rf"/partial\s+({SIGNAL_ID_PATTERN})\s+(\d+)%?",
         re.IGNORECASE
     )
     
@@ -98,11 +102,15 @@ class SignalParser:
     }
     
     @classmethod
-    def _generate_signal_id(cls) -> str:
-        """Generate a unique signal ID."""
-        cls._counter += 1
-        date_str = datetime.now().strftime("%Y%m%d")
-        return f"SIG-{date_str}-{cls._counter:03d}"
+    def _generate_signal_id(cls, symbol: str) -> str:
+        """
+        Generate a unique signal ID.
+        
+        Format: SIG-DDMMYY-SYMBOL
+        Example: SIG-030126-BTCUSDT
+        """
+        date_str = datetime.now().strftime("%d%m%y")
+        return f"SIG-{date_str}-{symbol.upper()}"
     
     @classmethod
     def _extract_param(cls, text: str, param_name: str) -> Optional[float]:
@@ -167,7 +175,7 @@ class SignalParser:
             leverage = 1
         
         return Signal(
-            signal_id=cls._generate_signal_id(),
+            signal_id=cls._generate_signal_id(symbol),
             signal_type=signal_type,
             symbol=symbol,
             order_type=order_type,
@@ -185,7 +193,7 @@ class SignalParser:
         Parse a /update command.
         
         Example:
-            /update SIG-20260103-001 sl=49500 tp=52500
+            /update SIG-030126-BTCUSDT sl=49500 tp=52500
         """
         match = cls.UPDATE_PATTERN.match(message.strip())
         if not match:
@@ -207,7 +215,7 @@ class SignalParser:
         Parse a /close command.
         
         Example:
-            /close SIG-20260103-001
+            /close SIG-030126-BTCUSDT
         """
         match = cls.CLOSE_PATTERN.match(message.strip())
         if match:
@@ -220,7 +228,7 @@ class SignalParser:
         Parse a /partial close command.
         
         Example:
-            /partial SIG-20260103-001 50%
+            /partial SIG-030126-BTCUSDT 50%
         """
         match = cls.PARTIAL_PATTERN.match(message.strip())
         if match:
@@ -229,6 +237,20 @@ class SignalParser:
                 signal_id=match.group(1).upper(),
                 partial_percent=percent
             )
+        return None
+    
+    @classmethod
+    def extract_symbol_from_id(cls, signal_id: str) -> Optional[str]:
+        """
+        Extract the trading symbol from a signal ID.
+        
+        Example:
+            SIG-030126-BTCUSDT -> BTCUSDT
+            SIG-030126-XRPUSDT -> XRPUSDT
+        """
+        parts = signal_id.split("-")
+        if len(parts) >= 3:
+            return parts[2].upper()
         return None
     
     @classmethod
