@@ -5,9 +5,16 @@ Railway startup script with debugging.
 import os
 import sys
 
+# Add src to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 print("=" * 60)
 print("MUDREX SIGNAL BOT - RAILWAY STARTUP")
 print("=" * 60)
+print(f"Python version: {sys.version}")
+print(f"Working directory: {os.getcwd()}")
+print(f"Script location: {__file__}")
+print(f"sys.path: {sys.path[:3]}...")
 
 # Check required environment variables
 required_vars = [
@@ -23,7 +30,7 @@ for var in required_vars:
     if value:
         # Mask sensitive values
         if "TOKEN" in var or "SECRET" in var:
-            print(f"✅ {var} = {value[:10]}...{value[-4:]}")
+            print(f"✅ {var} = {value[:10]}...{value[-4:] if len(value) > 14 else ''}")
         else:
             print(f"✅ {var} = {value}")
     else:
@@ -43,7 +50,14 @@ if missing:
 
 print("\n✅ All required variables present. Starting bot...")
 print("=" * 60)
+sys.stdout.flush()
 
 # Import and run the actual bot
-from signal_bot.run import main
-main()
+try:
+    from signal_bot.run import main
+    main()
+except Exception as e:
+    print(f"\n❌ STARTUP ERROR: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
