@@ -30,6 +30,7 @@ class Subscriber:
     trade_amount_usdt: float
     max_leverage: int
     is_active: bool
+    trade_mode: str  # 'auto' or 'manual'
     created_at: datetime
     updated_at: datetime
     total_trades: int = 0
@@ -78,6 +79,7 @@ class Database:
                 trade_amount_usdt REAL DEFAULT 50.0,
                 max_leverage INTEGER DEFAULT 10,
                 is_active INTEGER DEFAULT 1,
+                trade_mode TEXT DEFAULT 'auto',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 total_trades INTEGER DEFAULT 0,
@@ -171,6 +173,7 @@ class Database:
             trade_amount_usdt=trade_amount_usdt,
             max_leverage=max_leverage,
             is_active=True,
+            trade_mode='auto',
             created_at=datetime.fromisoformat(now),
             updated_at=datetime.fromisoformat(now),
         )
@@ -195,6 +198,7 @@ class Database:
                 trade_amount_usdt=row["trade_amount_usdt"],
                 max_leverage=row["max_leverage"],
                 is_active=bool(row["is_active"]),
+                trade_mode=row.get("trade_mode", "auto") if hasattr(row, 'get') else (row["trade_mode"] if "trade_mode" in row.keys() else "auto"),
                 created_at=datetime.fromisoformat(row["created_at"]),
                 updated_at=datetime.fromisoformat(row["updated_at"]),
                 total_trades=row["total_trades"],
@@ -221,6 +225,7 @@ class Database:
                         trade_amount_usdt=row["trade_amount_usdt"],
                         max_leverage=row["max_leverage"],
                         is_active=True,
+                        trade_mode=row["trade_mode"] if "trade_mode" in row.keys() else "auto",
                         created_at=datetime.fromisoformat(row["created_at"]),
                         updated_at=datetime.fromisoformat(row["updated_at"]),
                         total_trades=row["total_trades"],
@@ -253,6 +258,22 @@ class Database:
         )
         await self._connection.commit()
         
+        return result.rowcount > 0
+    
+    async def update_trade_mode(self, telegram_id: int, mode: str) -> bool:
+        """Update a subscriber's trade mode ('auto' or 'manual')."""
+        if mode not in ('auto', 'manual'):
+            raise ValueError("Mode must be 'auto' or 'manual'")
+        
+        now = datetime.now().isoformat()
+        
+        result = await self._connection.execute(
+            "UPDATE subscribers SET trade_mode = ?, updated_at = ? WHERE telegram_id = ?",
+            (mode, now, telegram_id)
+        )
+        await self._connection.commit()
+        
+        logger.info(f"Trade mode updated for {telegram_id}: {mode}")
         return result.rowcount > 0
     
     async def deactivate_subscriber(self, telegram_id: int) -> bool:
@@ -347,6 +368,17 @@ class Database:
             (now, signal_id)
         )
         await self._connection.commit()
+    
+    async def get_signal(self, signal_id: str) -> Optional[dict]:
+        """Get a signal by ID."""
+        async with self._connection.execute(
+            "SELECT * FROM signals WHERE signal_id = ?",
+            (signal_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
     
     async def get_subscriber_count(self) -> int:
         """Get total active subscriber count."""

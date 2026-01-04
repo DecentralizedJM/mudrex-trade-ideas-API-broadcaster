@@ -9,16 +9,18 @@ This bot:
 """
 
 import asyncio
+import json
 import logging
 from typing import Optional
 
-from telegram import Update, Bot
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
     MessageHandler,
     ConversationHandler,
+    CallbackQueryHandler,
     filters,
 )
 
@@ -343,18 +345,22 @@ class SignalBot:
             context.user_data.clear()
             
             await update.message.reply_text(
-                f"🎉 **Registration Complete!**\n"
+                f"🎉 Registration Complete!\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"💰 Trade Amount: **{amount} USDT**\n"
-                f"⚡ Max Leverage: **{self.settings.default_max_leverage}x**\n"
+                f"💰 Trade Amount: {amount} USDT\n"
+                f"⚡ Max Leverage: {self.settings.default_max_leverage}x\n"
+                f"🤖 Mode: AUTO (trades execute automatically)\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"You'll now receive trades automatically when signals are posted!\n\n"
-                f"**Commands:**\n"
+                f"⚠️ IMPORTANT WARNING ⚠️\n"
+                f"When Mudrex Trading Team publishes a trade idea, "
+                f"it will be AUTO-EXECUTED in your Mudrex Futures account!\n\n"
+                f"📊 Your funds are at risk. Only use amounts you can afford to lose.\n\n"
+                f"Commands:\n"
                 f"/status - View your settings\n"
                 f"/setamount - Change trade amount\n"
                 f"/setleverage - Change max leverage\n"
-                f"/unregister - Stop receiving signals",
-                parse_mode="Markdown"
+                f"/setmode - Switch between auto/manual mode\n"
+                f"/unregister - Stop receiving signals"
             )
             
             logger.info(f"New subscriber registered: {user.id} (@{user.username})")
@@ -454,6 +460,54 @@ class SignalBot:
         else:
             await update.message.reply_text("❌ You're not registered.")
     
+    async def setmode_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /setmode command to switch between AUTO and MANUAL trade modes."""
+        user = update.effective_user
+        subscriber = await self.db.get_subscriber(user.id)
+        
+        if not subscriber or not subscriber.is_active:
+            await update.message.reply_text("❌ You're not registered. Use /register first.")
+            return
+        
+        args = context.args
+        if not args:
+            mode_emoji = "🤖" if subscriber.trade_mode == "AUTO" else "👆"
+            await update.message.reply_text(
+                f"{mode_emoji} Current trade mode: **{subscriber.trade_mode}**\n\n"
+                f"**Available modes:**\n"
+                f"🤖 `AUTO` - Trades execute automatically\n"
+                f"👆 `MANUAL` - You'll be asked to confirm each trade\n\n"
+                f"Usage: `/setmode auto` or `/setmode manual`",
+                parse_mode="Markdown"
+            )
+            return
+        
+        mode = args[0].upper()
+        if mode not in ["AUTO", "MANUAL"]:
+            await update.message.reply_text(
+                "❌ Invalid mode. Use `/setmode auto` or `/setmode manual`",
+                parse_mode="Markdown"
+            )
+            return
+        
+        await self.db.update_trade_mode(user.id, mode)
+        
+        if mode == "AUTO":
+            await update.message.reply_text(
+                "🤖 **Trade mode set to AUTO**\n\n"
+                "Trades will be executed automatically when signals are published.\n\n"
+                "⚠️ Make sure you trust the signal source!",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                "👆 **Trade mode set to MANUAL**\n\n"
+                "You will receive a confirmation message for each trade signal.\n"
+                "The trade will only execute after you approve it.\n\n"
+                "💡 You have 5 minutes to confirm each trade.",
+                parse_mode="Markdown"
+            )
+    
     # ==================== Admin Commands ====================
     
     async def admin_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -531,14 +585,14 @@ class SignalBot:
         summary = format_signal_summary(signal)
         await message.reply_text(summary, parse_mode="Markdown")
         
-        # Broadcast to all subscribers
-        results = await self.broadcaster.broadcast_signal(signal)
+        # Broadcast to all subscribers (returns AUTO results + MANUAL subscribers list)
+        results, manual_subscribers = await self.broadcaster.broadcast_signal(signal)
         
-        # Send summary to admin
-        broadcast_summary = format_broadcast_summary(signal, results)
+        # Send summary to admin (including manual count)
+        broadcast_summary = format_broadcast_summary(signal, results, len(manual_subscribers))
         await message.reply_text(broadcast_summary, parse_mode="Markdown")
         
-        # Notify each subscriber via DM
+        # Notify each AUTO subscriber via DM with trade result
         for result in results:
             try:
                 notification = format_user_trade_notification(signal, result)
@@ -549,6 +603,135 @@ class SignalBot:
                 )
             except Exception as e:
                 logger.error(f"Failed to notify {result.subscriber_id}: {e}")
+        
+        # Send confirmation request to MANUAL subscribers
+        for subscriber in manual_subscribers:
+            try:
+                await self._send_manual_confirmation(signal, subscriber)
+            except Exception as e:
+                logger.error(f"Failed to send confirmation to {subscriber.telegram_id}: {e}")
+    
+    async def _send_manual_confirmation(self, signal: Signal, subscriber):
+        """Send trade confirmation request to a MANUAL mode subscriber."""
+        # Store signal data in callback_data
+        callback_data = json.dumps({
+            "action": "confirm_trade",
+            "signal_id": signal.signal_id,
+            "user_id": subscriber.telegram_id,
+        })
+        
+        reject_data = json.dumps({
+            "action": "reject_trade",
+            "signal_id": signal.signal_id,
+            "user_id": subscriber.telegram_id,
+        })
+        
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Execute Trade", callback_data=callback_data),
+                InlineKeyboardButton("❌ Skip", callback_data=reject_data),
+            ]
+        ])
+        
+        text = f"""
+👆 **Trade Confirmation Required**
+━━━━━━━━━━━━━━━━━━━━
+🆔 Signal: `{signal.signal_id}`
+📊 {signal.signal_type.value} **{signal.symbol}**
+📋 Type: {signal.order_type.value}
+💵 Entry: {signal.entry_price or "Market"}
+🛑 SL: {signal.stop_loss or "Not set"}
+🎯 TP: {signal.take_profit or "Not set"}
+⚡ Leverage: {signal.leverage}x
+💰 Your amount: {subscriber.trade_amount_usdt} USDT
+━━━━━━━━━━━━━━━━━━━━
+
+⏰ **You have 5 minutes to confirm.**
+Click "Execute Trade" to proceed or "Skip" to ignore.
+""".strip()
+        
+        await self.bot.send_message(
+            chat_id=subscriber.telegram_id,
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+        
+        logger.info(f"Sent confirmation request to {subscriber.telegram_id} for signal {signal.signal_id}")
+    
+    async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle callback button presses (for manual trade confirmations)."""
+        query = update.callback_query
+        await query.answer()  # Acknowledge the button press
+        
+        try:
+            data = json.loads(query.data)
+        except json.JSONDecodeError:
+            await query.edit_message_text("❌ Invalid request.")
+            return
+        
+        action = data.get("action")
+        signal_id = data.get("signal_id")
+        user_id = data.get("user_id")
+        
+        # Verify user
+        if query.from_user.id != user_id:
+            await query.answer("❌ This confirmation is not for you.", show_alert=True)
+            return
+        
+        if action == "confirm_trade":
+            await self._execute_confirmed_trade(query, signal_id, user_id)
+        elif action == "reject_trade":
+            await query.edit_message_text(
+                f"⏭️ **Trade Skipped**\n\n"
+                f"Signal `{signal_id}` was not executed.\n"
+                f"You can always switch to AUTO mode with /setmode auto",
+                parse_mode="Markdown"
+            )
+    
+    async def _execute_confirmed_trade(self, query, signal_id: str, user_id: int):
+        """Execute a trade after user confirms in MANUAL mode."""
+        # Get subscriber
+        subscriber = await self.db.get_subscriber(user_id)
+        if not subscriber or not subscriber.is_active:
+            await query.edit_message_text("❌ You're not registered anymore.")
+            return
+        
+        # Get the signal from database
+        signal_data = await self.db.get_signal(signal_id)
+        if not signal_data:
+            await query.edit_message_text(
+                f"❌ Signal `{signal_id}` not found or expired.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Reconstruct Signal object
+        from .signal_parser import Signal, SignalType, OrderType
+        signal = Signal(
+            signal_id=signal_data["signal_id"],
+            symbol=signal_data["symbol"],
+            signal_type=SignalType(signal_data["signal_type"]),
+            order_type=OrderType(signal_data["order_type"]),
+            entry_price=signal_data.get("entry_price"),
+            stop_loss=signal_data.get("stop_loss"),
+            take_profit=signal_data.get("take_profit"),
+            leverage=signal_data.get("leverage", 1),
+        )
+        
+        # Update message to show processing
+        await query.edit_message_text(
+            f"⏳ **Executing trade...**\n\n"
+            f"Signal: `{signal_id}`",
+            parse_mode="Markdown"
+        )
+        
+        # Execute the trade
+        result = await self.broadcaster.execute_single_trade(signal, subscriber)
+        
+        # Notify user of result
+        notification = format_user_trade_notification(signal, result)
+        await query.edit_message_text(notification, parse_mode="Markdown")
     
     async def _handle_close_signal(self, message, close: SignalClose):
         """Handle a close signal from admin."""
@@ -608,8 +791,12 @@ class SignalBot:
         self.app.add_handler(registration_handler)
         self.app.add_handler(CommandHandler("setamount", self.setamount_command))
         self.app.add_handler(CommandHandler("setleverage", self.setleverage_command))
+        self.app.add_handler(CommandHandler("setmode", self.setmode_command))
         self.app.add_handler(CommandHandler("unregister", self.unregister_command))
         self.app.add_handler(CommandHandler("adminstats", self.admin_stats_command))
+        
+        # Callback handler for inline button presses (manual trade confirmations)
+        self.app.add_handler(CallbackQueryHandler(self.handle_callback_query))
         
         # Signal handlers - for both private messages and channel posts
         self.app.add_handler(MessageHandler(

@@ -30,6 +30,7 @@ class TradeStatus(Enum):
     SYMBOL_NOT_FOUND = "SYMBOL_NOT_FOUND"
     API_ERROR = "API_ERROR"
     SKIPPED = "SKIPPED"
+    PENDING_CONFIRMATION = "PENDING_CONFIRMATION"
 
 
 @dataclass
@@ -58,7 +59,7 @@ class SignalBroadcaster:
     def __init__(self, database: Database):
         self.db = database
     
-    async def broadcast_signal(self, signal: Signal) -> List[TradeResult]:
+    async def broadcast_signal(self, signal: Signal) -> Tuple[List[TradeResult], List[Subscriber]]:
         """
         Execute a signal for all active subscribers.
         
@@ -66,7 +67,9 @@ class SignalBroadcaster:
             signal: The parsed trading signal
             
         Returns:
-            List of trade results for each subscriber
+            Tuple of:
+            - List of trade results for AUTO mode subscribers
+            - List of MANUAL mode subscribers (for confirmation flow)
         """
         logger.info(f"Broadcasting signal {signal.signal_id} to all subscribers")
         
@@ -75,9 +78,15 @@ class SignalBroadcaster:
         
         if not subscribers:
             logger.warning("No active subscribers to broadcast to")
-            return []
+            return [], []
         
-        logger.info(f"Executing for {len(subscribers)} subscribers")
+        logger.info(f"Found {len(subscribers)} subscribers")
+        
+        # Separate AUTO and MANUAL subscribers
+        auto_subscribers = [s for s in subscribers if s.trade_mode == "AUTO"]
+        manual_subscribers = [s for s in subscribers if s.trade_mode == "MANUAL"]
+        
+        logger.info(f"AUTO: {len(auto_subscribers)}, MANUAL: {len(manual_subscribers)}")
         
         # Save signal to database
         await self.db.save_signal(
@@ -91,33 +100,36 @@ class SignalBroadcaster:
             leverage=signal.leverage,
         )
         
-        # Execute for all subscribers in parallel
-        tasks = [
-            self._execute_for_subscriber(signal, subscriber)
-            for subscriber in subscribers
-        ]
+        # Execute for AUTO subscribers in parallel
+        if auto_subscribers:
+            tasks = [
+                self._execute_for_subscriber(signal, subscriber)
+                for subscriber in auto_subscribers
+            ]
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Filter out exceptions and log them
+            trade_results = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"Trade failed for subscriber: {result}")
+                    trade_results.append(TradeResult(
+                        subscriber_id=auto_subscribers[i].telegram_id,
+                        username=auto_subscribers[i].username,
+                        status=TradeStatus.API_ERROR,
+                        message=str(result),
+                    ))
+                else:
+                    trade_results.append(result)
+            
+            # Log summary
+            success_count = sum(1 for r in trade_results if r.status == TradeStatus.SUCCESS)
+            logger.info(f"Signal {signal.signal_id}: {success_count}/{len(trade_results)} AUTO trades successful")
+        else:
+            trade_results = []
         
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Filter out exceptions and log them
-        trade_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                logger.error(f"Trade failed for subscriber: {result}")
-                trade_results.append(TradeResult(
-                    subscriber_id=subscribers[i].telegram_id,
-                    username=subscribers[i].username,
-                    status=TradeStatus.API_ERROR,
-                    message=str(result),
-                ))
-            else:
-                trade_results.append(result)
-        
-        # Log summary
-        success_count = sum(1 for r in trade_results if r.status == TradeStatus.SUCCESS)
-        logger.info(f"Signal {signal.signal_id}: {success_count}/{len(trade_results)} successful")
-        
-        return trade_results
+        return trade_results, manual_subscribers
     
     async def _execute_for_subscriber(
         self,
@@ -337,13 +349,30 @@ class SignalBroadcaster:
         # For MVP, just mark as closed. Position closing would require
         # tracking position IDs per subscriber, which we can add later.
         return []
+    
+    async def execute_single_trade(self, signal: Signal, subscriber: Subscriber) -> TradeResult:
+        """
+        Execute a single trade for a specific subscriber.
+        Used for manual confirmation flow.
+        
+        Args:
+            signal: The parsed trading signal
+            subscriber: The subscriber who confirmed the trade
+            
+        Returns:
+            Trade result
+        """
+        logger.info(f"Executing confirmed trade for {subscriber.telegram_id}: {signal.signal_id}")
+        return await self._execute_for_subscriber(signal, subscriber)
 
 
-def format_broadcast_summary(signal: Signal, results: List[TradeResult]) -> str:
+def format_broadcast_summary(signal: Signal, results: List[TradeResult], manual_count: int = 0) -> str:
     """Format broadcast results for admin notification."""
     success = sum(1 for r in results if r.status == TradeStatus.SUCCESS)
     failed = sum(1 for r in results if r.status == TradeStatus.API_ERROR)
     insufficient = sum(1 for r in results if r.status == TradeStatus.INSUFFICIENT_BALANCE)
+    
+    manual_line = f"\n👆 Manual (awaiting): {manual_count}" if manual_count > 0 else ""
     
     return f"""
 📡 **Signal Broadcast Complete**
@@ -354,9 +383,9 @@ def format_broadcast_summary(signal: Signal, results: List[TradeResult]) -> str:
 **Results:**
 ✅ Success: {success}
 💰 Insufficient Balance: {insufficient}
-❌ Failed: {failed}
+❌ Failed: {failed}{manual_line}
 ━━━━━━━━━━━━━━━━━━━━
-Total: {len(results)} subscribers
+Total: {len(results) + manual_count} subscribers
 """.strip()
 
 
