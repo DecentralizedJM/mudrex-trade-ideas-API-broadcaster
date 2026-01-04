@@ -595,12 +595,19 @@ class SignalBot:
         # Notify each AUTO subscriber via DM with trade result
         for result in results:
             try:
-                notification = format_user_trade_notification(signal, result)
-                await self.bot.send_message(
-                    chat_id=result.subscriber_id,
-                    text=notification,
-                    parse_mode="Markdown"
-                )
+                # Check if insufficient balance but has some available
+                if (result.status == TradeStatus.INSUFFICIENT_BALANCE 
+                    and result.available_balance 
+                    and result.available_balance >= 1.0):
+                    # Offer to trade with available balance
+                    await self._send_reduced_balance_offer(signal, result)
+                else:
+                    notification = format_user_trade_notification(signal, result)
+                    await self.bot.send_message(
+                        chat_id=result.subscriber_id,
+                        text=notification,
+                        parse_mode="Markdown"
+                    )
             except Exception as e:
                 logger.error(f"Failed to notify {result.subscriber_id}: {e}")
         
@@ -613,22 +620,14 @@ class SignalBot:
     
     async def _send_manual_confirmation(self, signal: Signal, subscriber):
         """Send trade confirmation request to a MANUAL mode subscriber."""
-        # Store signal data in callback_data
-        callback_data = json.dumps({
-            "action": "confirm_trade",
-            "signal_id": signal.signal_id,
-            "user_id": subscriber.telegram_id,
-        })
-        
-        reject_data = json.dumps({
-            "action": "reject_trade",
-            "signal_id": signal.signal_id,
-            "user_id": subscriber.telegram_id,
-        })
+        # Use short callback data format: "c:{signal_id}" or "r:{signal_id}"
+        # Telegram limit is 64 bytes
+        confirm_data = f"c:{signal.signal_id}"
+        reject_data = f"r:{signal.signal_id}"
         
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ Execute Trade", callback_data=callback_data),
+                InlineKeyboardButton("✅ Execute Trade", callback_data=confirm_data),
                 InlineKeyboardButton("❌ Skip", callback_data=reject_data),
             ]
         ])
@@ -659,35 +658,80 @@ Click "Execute Trade" to proceed or "Skip" to ignore.
         
         logger.info(f"Sent confirmation request to {subscriber.telegram_id} for signal {signal.signal_id}")
     
+    async def _send_reduced_balance_offer(self, signal: Signal, result):
+        """Send an offer to trade with available balance when configured amount is insufficient."""
+        available = result.available_balance
+        
+        # Callback data: "b:{signal_id}:{amount}" (b = balance trade)
+        accept_data = f"b:{signal.signal_id}:{available:.2f}"
+        reject_data = f"r:{signal.signal_id}"
+        
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"✅ Trade with ${available:.2f}", callback_data=accept_data),
+                InlineKeyboardButton("❌ Skip", callback_data=reject_data),
+            ]
+        ])
+        
+        text = f"""
+💰 **Insufficient Balance**
+━━━━━━━━━━━━━━━━━━━━
+🆔 Signal: `{signal.signal_id}`
+📊 {signal.signal_type.value} **{signal.symbol}**
+
+Your configured amount: **${result.message.split('Requested: ')[1].split(' USDT')[0]} USDT**
+Available balance: **${available:.2f} USDT**
+
+Would you like to execute this trade with your available balance instead?
+━━━━━━━━━━━━━━━━━━━━
+""".strip()
+        
+        await self.bot.send_message(
+            chat_id=result.subscriber_id,
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+        
+        logger.info(f"Sent reduced balance offer to {result.subscriber_id} for signal {signal.signal_id}")
+    
     async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle callback button presses (for manual trade confirmations)."""
         query = update.callback_query
         await query.answer()  # Acknowledge the button press
         
-        try:
-            data = json.loads(query.data)
-        except json.JSONDecodeError:
-            await query.edit_message_text("❌ Invalid request.")
-            return
+        data = query.data
+        user_id = query.from_user.id
         
-        action = data.get("action")
-        signal_id = data.get("signal_id")
-        user_id = data.get("user_id")
-        
-        # Verify user
-        if query.from_user.id != user_id:
-            await query.answer("❌ This confirmation is not for you.", show_alert=True)
-            return
-        
-        if action == "confirm_trade":
+        # Parse callback data formats:
+        # "c:{signal_id}" - confirm trade (manual mode)
+        # "r:{signal_id}" - reject/skip trade
+        # "b:{signal_id}:{amount}" - trade with reduced balance
+        if data.startswith("c:"):
+            signal_id = data[2:]
             await self._execute_confirmed_trade(query, signal_id, user_id)
-        elif action == "reject_trade":
+        elif data.startswith("r:"):
+            signal_id = data[2:]
             await query.edit_message_text(
                 f"⏭️ **Trade Skipped**\n\n"
                 f"Signal `{signal_id}` was not executed.\n"
                 f"You can always switch to AUTO mode with /setmode auto",
                 parse_mode="Markdown"
             )
+        elif data.startswith("b:"):
+            # Balance trade: b:{signal_id}:{amount}
+            parts = data[2:].split(":")
+            if len(parts) == 2:
+                signal_id, amount_str = parts
+                try:
+                    amount = float(amount_str)
+                    await self._execute_with_balance(query, signal_id, user_id, amount)
+                except ValueError:
+                    await query.edit_message_text("❌ Invalid amount.")
+            else:
+                await query.edit_message_text("❌ Invalid request.")
+        else:
+            await query.edit_message_text("❌ Invalid request.")
     
     async def _execute_confirmed_trade(self, query, signal_id: str, user_id: int):
         """Execute a trade after user confirms in MANUAL mode."""
@@ -708,6 +752,7 @@ Click "Execute Trade" to proceed or "Skip" to ignore.
         
         # Reconstruct Signal object
         from .signal_parser import Signal, SignalType, OrderType
+        from datetime import datetime
         signal = Signal(
             signal_id=signal_data["signal_id"],
             symbol=signal_data["symbol"],
@@ -717,6 +762,8 @@ Click "Execute Trade" to proceed or "Skip" to ignore.
             stop_loss=signal_data.get("stop_loss"),
             take_profit=signal_data.get("take_profit"),
             leverage=signal_data.get("leverage", 1),
+            raw_message="",  # Not stored in DB, not needed for execution
+            timestamp=datetime.fromisoformat(signal_data["created_at"]) if signal_data.get("created_at") else datetime.now(),
         )
         
         # Update message to show processing
@@ -728,6 +775,53 @@ Click "Execute Trade" to proceed or "Skip" to ignore.
         
         # Execute the trade
         result = await self.broadcaster.execute_single_trade(signal, subscriber)
+        
+        # Notify user of result
+        notification = format_user_trade_notification(signal, result)
+        await query.edit_message_text(notification, parse_mode="Markdown")
+    
+    async def _execute_with_balance(self, query, signal_id: str, user_id: int, amount: float):
+        """Execute a trade with a specific amount (for reduced balance flow)."""
+        # Get subscriber
+        subscriber = await self.db.get_subscriber(user_id)
+        if not subscriber or not subscriber.is_active:
+            await query.edit_message_text("❌ You're not registered anymore.")
+            return
+        
+        # Get the signal from database
+        signal_data = await self.db.get_signal(signal_id)
+        if not signal_data:
+            await query.edit_message_text(
+                f"❌ Signal `{signal_id}` not found or expired.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Reconstruct Signal object
+        from .signal_parser import Signal, SignalType, OrderType
+        from datetime import datetime
+        signal = Signal(
+            signal_id=signal_data["signal_id"],
+            symbol=signal_data["symbol"],
+            signal_type=SignalType(signal_data["signal_type"]),
+            order_type=OrderType(signal_data["order_type"]),
+            entry_price=signal_data.get("entry_price"),
+            stop_loss=signal_data.get("stop_loss"),
+            take_profit=signal_data.get("take_profit"),
+            leverage=signal_data.get("leverage", 1),
+            raw_message="",
+            timestamp=datetime.fromisoformat(signal_data["created_at"]) if signal_data.get("created_at") else datetime.now(),
+        )
+        
+        # Update message to show processing
+        await query.edit_message_text(
+            f"⏳ **Executing trade with ${amount:.2f}...**\n\n"
+            f"Signal: `{signal_id}`",
+            parse_mode="Markdown"
+        )
+        
+        # Execute the trade with override amount
+        result = await self.broadcaster.execute_with_amount(signal, subscriber, amount)
         
         # Notify user of result
         notification = format_user_trade_notification(signal, result)
@@ -799,10 +893,11 @@ Click "Execute Trade" to proceed or "Skip" to ignore.
         self.app.add_handler(CallbackQueryHandler(self.handle_callback_query))
         
         # Signal handlers - for both private messages and channel posts
+        # Use group=1 so command handlers (group=0 by default) are processed first
         self.app.add_handler(MessageHandler(
             filters.TEXT & (filters.ChatType.PRIVATE | filters.ChatType.CHANNEL),
             self.handle_signal_message
-        ))
+        ), group=1)
         
         return self.app
     

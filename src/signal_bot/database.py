@@ -261,9 +261,10 @@ class Database:
         return result.rowcount > 0
     
     async def update_trade_mode(self, telegram_id: int, mode: str) -> bool:
-        """Update a subscriber's trade mode ('auto' or 'manual')."""
-        if mode not in ('auto', 'manual'):
-            raise ValueError("Mode must be 'auto' or 'manual'")
+        """Update a subscriber's trade mode ('AUTO' or 'MANUAL')."""
+        mode = mode.upper()
+        if mode not in ('AUTO', 'MANUAL'):
+            raise ValueError("Mode must be 'AUTO' or 'MANUAL'")
         
         now = datetime.now().isoformat()
         

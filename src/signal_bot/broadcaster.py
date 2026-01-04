@@ -47,6 +47,8 @@ class TradeResult:
     side: Optional[str] = None
     order_type: Optional[str] = None
     entry_price: Optional[float] = None
+    # For insufficient balance flow
+    available_balance: Optional[float] = None
 
 
 class SignalBroadcaster:
@@ -190,14 +192,28 @@ class SignalBroadcaster:
             balance_info = client.wallet.get_futures_balance()
             balance = float(balance_info.balance) if balance_info else 0.0
             
+            # Check if balance is sufficient - include available_balance for potential reduced trade
             if balance < subscriber.trade_amount_usdt:
+                # Check if we have at least $1 to trade
+                if balance < 1.0:
+                    return TradeResult(
+                        subscriber_id=subscriber.telegram_id,
+                        username=subscriber.username,
+                        status=TradeStatus.INSUFFICIENT_BALANCE,
+                        message=f"Balance too low: {balance:.2f} USDT (min $1 required)",
+                        side=signal.signal_type.value,
+                        order_type=signal.order_type.value,
+                        available_balance=balance,
+                    )
+                # We have some balance, return with available amount for user to decide
                 return TradeResult(
                     subscriber_id=subscriber.telegram_id,
                     username=subscriber.username,
                     status=TradeStatus.INSUFFICIENT_BALANCE,
-                    message=f"Insufficient balance: {balance:.2f} USDT",
+                    message=f"Requested: {subscriber.trade_amount_usdt} USDT, Available: {balance:.2f} USDT",
                     side=signal.signal_type.value,
                     order_type=signal.order_type.value,
+                    available_balance=balance,
                 )
             
             # Get asset details for quantity calculation
@@ -364,6 +380,32 @@ class SignalBroadcaster:
         """
         logger.info(f"Executing confirmed trade for {subscriber.telegram_id}: {signal.signal_id}")
         return await self._execute_for_subscriber(signal, subscriber)
+    
+    async def execute_with_amount(
+        self, 
+        signal: Signal, 
+        subscriber: Subscriber, 
+        override_amount: float
+    ) -> TradeResult:
+        """
+        Execute a trade with a specific override amount.
+        Used when user accepts to trade with available balance instead of configured amount.
+        
+        Args:
+            signal: The parsed trading signal
+            subscriber: The subscriber
+            override_amount: The amount to use instead of subscriber.trade_amount_usdt
+            
+        Returns:
+            Trade result
+        """
+        logger.info(f"Executing trade for {subscriber.telegram_id} with override amount: {override_amount} USDT")
+        
+        # Create a modified subscriber with the override amount
+        from dataclasses import replace
+        modified_subscriber = replace(subscriber, trade_amount_usdt=override_amount)
+        
+        return await self._execute_for_subscriber(signal, modified_subscriber)
 
 
 def format_broadcast_summary(signal: Signal, results: List[TradeResult], manual_count: int = 0) -> str:
