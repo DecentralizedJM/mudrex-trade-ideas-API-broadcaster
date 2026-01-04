@@ -32,8 +32,15 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Mudrex TradeIdeas Bot...")
     
-    # Load settings
-    settings = get_settings()
+    try:
+        # Load settings
+        settings = get_settings()
+        logger.info(f"Settings loaded - Admin: {settings.admin_telegram_id}")
+    except Exception as e:
+        logger.error(f"Failed to load settings: {e}")
+        logger.error("Make sure all required environment variables are set:")
+        logger.error("  TELEGRAM_BOT_TOKEN, ENCRYPTION_SECRET, ADMIN_TELEGRAM_ID, SIGNAL_CHANNEL_ID")
+        raise
     
     # Initialize crypto
     init_crypto(settings.encryption_secret)
