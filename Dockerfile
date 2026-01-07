@@ -42,10 +42,8 @@ COPY . .
 # Install the package in production mode (non-editable)
 RUN pip install --no-deps .
 
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash app && \
-    chown -R app:app /app
-USER app
+# Create data directory for volume mount
+RUN mkdir -p /app/data
 
 # Expose port for Railway
 EXPOSE 8080
