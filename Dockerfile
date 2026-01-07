@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for Railway deployment
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -11,10 +11,13 @@ RUN apt-get update && apt-get install -y \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt pyproject.toml ./
+# Copy all project files needed for installation
+COPY requirements.txt pyproject.toml README.md ./
+COPY src/ ./src/
+
+# Install Python dependencies
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+    pip install -e .
 
 # Production stage
 FROM python:3.11-slim
@@ -34,8 +37,8 @@ WORKDIR /app
 # Copy application code
 COPY . .
 
-# Install the package in production mode
-RUN pip install -e .
+# Install the package in production mode (non-editable)
+RUN pip install --no-deps .
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash app && \
