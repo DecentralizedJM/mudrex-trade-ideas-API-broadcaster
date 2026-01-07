@@ -26,6 +26,7 @@ FROM python:3.11-slim
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     sqlite3 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy virtual environment from builder
@@ -49,9 +50,9 @@ USER app
 # Expose port for Railway
 EXPOSE 8080
 
-# Health check
+# Health check - use PORT env variable that Railway sets
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8080}/health || exit 1
 
 # Default to webhook mode for Railway
 CMD ["python", "-m", "signal_bot.run"]
