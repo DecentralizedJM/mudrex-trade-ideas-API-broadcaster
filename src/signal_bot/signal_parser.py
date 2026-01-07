@@ -82,6 +82,13 @@ class SignalParser:
         re.IGNORECASE
     )
     
+    # Multi-line signal pattern (symbol and direction on separate lines)
+    # Matches: BTCUSDT\nLONG or BTCUSDT\nSHORT
+    MULTILINE_SIGNAL_PATTERN = re.compile(
+        r"^([A-Z0-9]+USDT?)\s*\n\s*(LONG|SHORT)",
+        re.IGNORECASE | re.MULTILINE
+    )
+    
     UPDATE_PATTERN = re.compile(
         rf"/update\s+({SIGNAL_ID_PATTERN})\s+(.+)",
         re.IGNORECASE
@@ -148,8 +155,18 @@ class SignalParser:
             SL: 49000
             TP: 52000
             Leverage: 10
+            
+        Multi-line format (no /signal prefix needed):
+            BTCUSDT
+            LONG
+            Entry: 50000
+            SL: 49000
+            TP: 52000
+            Lev: 10x
         """
         text = message.strip()
+        symbol = None
+        signal_type_str = None
         
         # Try pattern 1: /signal LONG BTCUSDT
         match = cls.SIGNAL_PATTERN.match(text)
@@ -163,7 +180,13 @@ class SignalParser:
                 symbol = match.group(1).upper()
                 signal_type_str = match.group(2).upper()
             else:
-                return None
+                # Try pattern 3: Multi-line format (BTCUSDT\nLONG)
+                match = cls.MULTILINE_SIGNAL_PATTERN.search(text)
+                if match:
+                    symbol = match.group(1).upper()
+                    signal_type_str = match.group(2).upper()
+                else:
+                    return None
         
         # Use entire message for parameter extraction (supports multi-line)
         params_text = text
@@ -292,7 +315,13 @@ class SignalParser:
         elif message.lower().startswith('/partial'):
             return cls.parse_partial(message)
         
-        return None
+        # Try to parse as multi-line signal (no /signal prefix)
+        # This supports:
+        # BTCUSDT
+        # LONG
+        # Entry: 95000
+        # ...
+        return cls.parse_signal(message)
 
 
 def format_signal_summary(signal: Signal) -> str:

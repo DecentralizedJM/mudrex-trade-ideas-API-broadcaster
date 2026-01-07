@@ -531,7 +531,7 @@ class SignalBot:
     # ==================== Signal Handling ====================
     
     async def handle_signal_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle messages that might be signals."""
+        """Handle messages that might be signals (non-command signals posted directly)."""
         message = update.message or update.channel_post
         
         if not message or not message.text:
@@ -540,12 +540,12 @@ class SignalBot:
         text = message.text.strip()
         chat_id = message.chat_id
         
+        # Skip /signal command - it's handled by signal_command handler
+        if text.lower().startswith('/signal'):
+            return
+        
         # Debug logging
         logger.debug(f"Received message from chat {chat_id}: {text[:50]}...")
-        
-        # Only process commands
-        if not text.startswith('/'):
-            return
         
         # Check source
         user_id = message.from_user.id if message.from_user else None
@@ -836,6 +836,107 @@ Would you like to execute this trade with your available balance instead?
             parse_mode="Markdown"
         )
     
+    # ==================== Channel Signal Command ====================
+    
+    async def signal_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Handle /signal command from channel admins.
+        
+        Only works in the designated signal channel.
+        Any admin of that channel can post signals.
+        
+        Format:
+        /signal 
+        XRPUSDT
+        LONG
+        Entry: 2.01
+        TP: 2.10
+        SL: 1.95
+        Lev: 10x
+        """
+        message = update.message or update.channel_post
+        if not message:
+            return
+        
+        chat_id = message.chat.id
+        
+        # Only allow in the signal channel
+        if not self._is_signal_channel(chat_id):
+            # Silently ignore if not in signal channel
+            return
+        
+        # Get the text after /signal
+        if not message.text:
+            await message.reply_text(
+                "📡 **Signal Command**\n\n"
+                "Format:\n"
+                "```\n"
+                "/signal \n"
+                "XRPUSDT\n"
+                "LONG\n"
+                "Entry: 2.01\n"
+                "TP: 2.10\n"
+                "SL: 1.95\n"
+                "Lev: 10x\n"
+                "```",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Extract signal text (everything after /signal on new lines)
+        signal_text = message.text
+        if signal_text.lower().startswith("/signal"):
+            signal_text = signal_text[7:].strip()  # Remove "/signal"
+        
+        if not signal_text:
+            await message.reply_text(
+                "📡 **Signal Command**\n\n"
+                "Format:\n"
+                "```\n"
+                "/signal \n"
+                "XRPUSDT\n"
+                "LONG\n"
+                "Entry: 2.01\n"
+                "TP: 2.10\n"
+                "SL: 1.95\n"
+                "Lev: 10x\n"
+                "```",
+                parse_mode="Markdown"
+            )
+            return
+        
+        try:
+            parsed = SignalParser.parse(signal_text)
+            
+            if parsed is None:
+                await message.reply_text(
+                    "⚠️ Could not parse signal. Check the format:\n\n"
+                    "```\n"
+                    "/signal \n"
+                    "BTCUSDT\n"
+                    "LONG\n"
+                    "Entry: 95000\n"
+                    "TP: 98000\n"
+                    "SL: 93000\n"
+                    "Lev: 20x\n"
+                    "```",
+                    parse_mode="Markdown"
+                )
+                return
+            
+            if isinstance(parsed, Signal):
+                await self._handle_new_signal(message, parsed)
+            elif isinstance(parsed, SignalClose):
+                await self._handle_close_signal(message, parsed)
+            else:
+                await message.reply_text("⚠️ Unknown signal type parsed.")
+                
+        except SignalParseError as e:
+            await message.reply_text(f"⚠️ Signal parse error: {e}")
+        except Exception as e:
+            logger.exception(f"Error processing /signal command: {e}")
+            await message.reply_text(f"❌ Error processing signal: {e}")
+    
     # ==================== Bot Setup ====================
     
     async def _post_init(self, application: Application):
@@ -888,6 +989,13 @@ Would you like to execute this trade with your available balance instead?
         self.app.add_handler(CommandHandler("setmode", self.setmode_command))
         self.app.add_handler(CommandHandler("unregister", self.unregister_command))
         self.app.add_handler(CommandHandler("adminstats", self.admin_stats_command))
+        
+        # /signal command - use MessageHandler with Regex for channel posts
+        # CommandHandler doesn't work for channel posts
+        self.app.add_handler(MessageHandler(
+            filters.Regex(r'^/signal') & filters.ChatType.CHANNEL,
+            self.signal_command
+        ))
         
         # Callback handler for inline button presses (manual trade confirmations)
         self.app.add_handler(CallbackQueryHandler(self.handle_callback_query))
