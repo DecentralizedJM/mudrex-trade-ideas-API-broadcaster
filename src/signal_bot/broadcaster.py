@@ -210,10 +210,11 @@ class SignalBroadcaster:
             balance = float(balance_info.balance) if balance_info else 0.0
             logger.info(f"Balance for {subscriber.telegram_id}: {balance} USDT")
             
-            # Determine trade amount - use available balance if set amount exceeds balance
-            trade_amount = subscriber.trade_amount_usdt
+            # Determine trade margin (amount user wants to bet)
+            target_margin = subscriber.trade_amount_usdt
             
-            if balance < subscriber.trade_amount_usdt:
+            # Auto-adjust if balance is lower than configured margin
+            if balance < target_margin:
                 # Check if we have any balance at all
                 if balance <= 0:
                     return TradeResult(
@@ -225,31 +226,9 @@ class SignalBroadcaster:
                         order_type=signal.order_type.value,
                         available_balance=balance,
                     )
-                # Auto-use available balance (no minimum required)
-                logger.info(f"Auto-adjusting trade amount from {subscriber.trade_amount_usdt} to {balance:.2f} USDT (using available balance)")
-                trade_amount = balance
-            
-            # Get asset details for quantity calculation
-            logger.info(f"Getting asset info for {signal.symbol}...")
-            try:
-                asset = client.assets.get(signal.symbol)
-                if not asset:
-                    raise ValueError(f"Asset returned None for {signal.symbol}")
-                # Verify essential fields exist
-                if not hasattr(asset, 'quantity_step') or not hasattr(asset, 'min_quantity'):
-                    logger.warning(f"Asset {signal.symbol} missing fields: {asset.__dict__}")
-            except Exception as asset_error:
-                logger.error(f"Symbol lookup failed for {signal.symbol}: {asset_error}")
-                return TradeResult(
-                    subscriber_id=subscriber.telegram_id,
-                    username=subscriber.username,
-                    status=TradeStatus.SYMBOL_NOT_FOUND,
-                    message=f"Symbol not found on Mudrex: {signal.symbol}. Check if this pair is available for futures trading.",
-                    side=signal.signal_type.value,
-                    order_type=signal.order_type.value,
-                )
-            
-            logger.info(f"Asset info: symbol={asset.symbol}, quantity_step={asset.quantity_step}, min_qty={asset.min_quantity}")
+                # Use entire available balance as margin
+                logger.info(f"Auto-adjusting margin from {target_margin} to {balance:.2f} USDT (using available balance)")
+                target_margin = balance
             
             # Set leverage (capped at subscriber's max)
             leverage = min(signal.leverage, subscriber.max_leverage)
@@ -259,8 +238,29 @@ class SignalBroadcaster:
                 leverage=str(leverage),
                 margin_type="ISOLATED"
             )
+
+            # Calculate NOTIONAL amount (Total Order Value = Margin * Leverage)
+            trade_amount_notional = target_margin * leverage
+            logger.info(f"Target Margin: ${target_margin} x Leverage {leverage} = Notional: ${trade_amount_notional}")
+
+            # Get asset details
+            logger.info(f"Getting asset info for {signal.symbol}...")
+            try:
+                asset = client.assets.get(signal.symbol)
+                if not asset:
+                    raise ValueError(f"Asset returned None for {signal.symbol}")
+            except Exception as asset_error:
+                logger.error(f"Symbol lookup failed: {asset_error}")
+                return TradeResult(
+                    subscriber_id=subscriber.telegram_id,
+                    username=subscriber.username,
+                    status=TradeStatus.SYMBOL_NOT_FOUND,
+                    message=f"Symbol not found: {signal.symbol}",
+                    side=signal.signal_type.value,
+                    order_type=signal.order_type.value,
+                )
             
-            # Calculate proper coin quantity from USD amount using SDK helper
+            # Determine Price
             price = None
             if signal.entry_price:
                 price = signal.entry_price
@@ -271,41 +271,34 @@ class SignalBroadcaster:
                     pass
             
             if not price:
-                logger.warning(f"Could not determine price for {signal.symbol}, defaulting to 1.0 (WARNING: This may cause incorrect quantity)")
+                logger.warning(f"Could not determine price for {signal.symbol}, using fallback 1.0")
                 price = 1.0
             
-            logger.info(f"Using calculation price: {price} for {signal.symbol}")
-            
-            # Round price to asset's price_step (tick size) to avoid API errors
+            # Round price if needed (for LIMIT orders)
             if hasattr(asset, 'price_step') and asset.price_step:
                 try:
                     price_step = float(asset.price_step)
                     if price_step > 0:
-                        original_price = price
                         rounded_price = round(price / price_step) * price_step
-                        # Determine precision from price_step
-                        price_precision = len(str(asset.price_step).split('.')[-1]) if '.' in str(asset.price_step) else 0
-                        price = round(rounded_price, price_precision)
-                        if price != original_price:
-                            logger.info(f"Rounded price from {original_price} to {price} (step: {asset.price_step})")
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Could not round price: {e}")
-            
+                        # Precision logic
+                        prec = len(str(asset.price_step).split('.')[-1]) if '.' in str(asset.price_step) else 0
+                        price = round(rounded_price, prec)
+                except Exception:
+                    pass
+
+            # Calculate Quantity from Notional Amount
             qty, actual_value = calculate_order_from_usd(
-                usd_amount=trade_amount,
+                usd_amount=trade_amount_notional,
                 price=price,
                 quantity_step=float(asset.quantity_step),
             )
             
-            logger.info(f"Calculated quantity: {qty} (actual value: ${actual_value:.2f}) for ${trade_amount} at price {price}")
-            
-            # Enforce minimum order value of $8 (heuristic based on fees + exchange min)
+            logger.info(f"Calculated Qty: {qty} (Value: ${actual_value:.2f})")
+
+            # Enforce Minimum Order Value ($8 Notional)
             MIN_ORDER_VALUE = 8.0
             if actual_value < MIN_ORDER_VALUE:
-                logger.info(f"Order value ${actual_value:.2f} is below minimum ${MIN_ORDER_VALUE}. Adjusting...")
-                
-                # Recalculate quantity for minimal allowed value
-                # We reuse calculate_order_from_usd to handle quantity steps correctly
+                logger.info(f"Value ${actual_value:.2f} < Min ${MIN_ORDER_VALUE}. Adjusting...")
                 qty, actual_value = calculate_order_from_usd(
                     usd_amount=MIN_ORDER_VALUE,
                     price=price,
@@ -314,8 +307,7 @@ class SignalBroadcaster:
                 
                 # Check if user has enough balance for this increase
                 required_margin = actual_value / leverage
-                
-                # Add a small buffer (1%) for fees coverage
+                # 1% buffer
                 if required_margin * 1.01 > balance:
                      return TradeResult(
                         subscriber_id=subscriber.telegram_id,
@@ -326,103 +318,55 @@ class SignalBroadcaster:
                         order_type=signal.order_type.value,
                         available_balance=balance,
                     )
-                
-                logger.info(f"Adjusted to {qty} {signal.symbol} (${actual_value:.2f}) to meet minimum value")
-            
-            # Validate against min/max
+                logger.info(f"Adjusted to {qty} (${actual_value:.2f})")
+
             if qty <= 0:
                  return TradeResult(
                     subscriber_id=subscriber.telegram_id,
                     username=subscriber.username,
                     status=TradeStatus.API_ERROR,
-                    message=f"Calculated quantity is 0 (Price: {price}, Value: ${actual_value:.5f}) - trade amount too low for this asset",
+                    message=f"Calculated quantity is 0 - amount too low",
                     side=signal.signal_type.value,
                     order_type=signal.order_type.value,
                 )
 
-            min_qty = float(asset.min_quantity)
-            max_qty = float(asset.max_quantity)
-            if qty < min_qty:
-                return TradeResult(
-                    subscriber_id=subscriber.telegram_id,
-                    username=subscriber.username,
-                    status=TradeStatus.API_ERROR,
-                    message=f"Quantity {qty} is below minimum {min_qty} for {signal.symbol}",
-                    side=signal.signal_type.value,
-                    order_type=signal.order_type.value,
-                )
-            
-            if qty > max_qty:
-                return TradeResult(
-                    subscriber_id=subscriber.telegram_id,
-                    username=subscriber.username,
-                    status=TradeStatus.API_ERROR,
-                    message=f"Quantity {qty} exceeds maximum {max_qty} for {signal.symbol}",
-                    side=signal.signal_type.value,
-                    order_type=signal.order_type.value,
-                )
-            
-            # Determine side (SDK uses LONG/SHORT)
+            # Determine side
             side = "LONG" if signal.signal_type == SignalType.LONG else "SHORT"
-            
-            # Create order using SDK with proper quantity
             qty_str = str(qty)
             
-            logger.info(f"Creating order: symbol={signal.symbol}, side={side}, qty={qty_str}, leverage={leverage}, order_type={signal.order_type.value}, entry_price={price}")
+            # Prepare SL/TP params
+            sl_param = str(signal.stop_loss) if signal.stop_loss else None
+            tp_param = str(signal.take_profit) if signal.take_profit else None
+
+            logger.info(f"Placing Order: {side} {qty_str} {signal.symbol} @ {price or 'Market'}")
             
             if signal.order_type == OrderType.MARKET:
-                # Market order
                 order = client.orders.create_market_order(
                     symbol=signal.symbol,
                     side=side,
                     quantity=qty_str,
                     leverage=str(leverage),
+                    stoploss_price=sl_param,
+                    takeprofit_price=tp_param,
                 )
             else:
-                # Limit order
                 order = client.orders.create_limit_order(
                     symbol=signal.symbol,
                     side=side,
                     price=str(price),
                     quantity=qty_str,
                     leverage=str(leverage),
+                    stoploss_price=sl_param,
+                    takeprofit_price=tp_param,
                 )
             
             logger.info(f"Order created: {order.order_id if order else 'None'}")
             
-            # Set SL/TP after order is placed (more reliable than in initial order)
-            sl_tp_set = False
-            sl_tp_error = None
-            if order and (signal.stop_loss or signal.take_profit):
-                try:
-                    # Find the position for this order
-                    positions = client.positions.list_open()
-                    position = next(
-                        (p for p in positions if p.symbol == signal.symbol),
-                        None
-                    )
-                    
-                    if position:
-                        client.positions.set_risk_order(
-                            position_id=position.position_id,
-                            stoploss_price=str(signal.stop_loss) if signal.stop_loss else None,
-                            takeprofit_price=str(signal.take_profit) if signal.take_profit else None,
-                        )
-                        sl_tp_set = True
-                        logger.info(f"Set SL/TP for {subscriber.telegram_id}: SL={signal.stop_loss}, TP={signal.take_profit}")
-                except Exception as e:
-                    # Log but don't fail the trade - order was already placed successfully
-                    sl_tp_error = str(e)
-                    logger.warning(f"Failed to set SL/TP for {subscriber.telegram_id}: {e}")
-            
-            # Build success message
+            # Success Message
             msg = f"{side} {qty_str} {signal.symbol} (~${actual_value:.2f})"
-            if signal.stop_loss or signal.take_profit:
-                if sl_tp_set:
-                    msg += " | SL/TP set"
-                else:
-                    msg += f" | SL/TP failed: {sl_tp_error}" if sl_tp_error else " | No position for SL/TP"
-            
+            if sl_param or tp_param:
+                msg += " | SL/TP set"
+
             return TradeResult(
                 subscriber_id=subscriber.telegram_id,
                 username=subscriber.username,
