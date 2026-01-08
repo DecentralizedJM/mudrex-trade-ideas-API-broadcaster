@@ -17,7 +17,7 @@ from .crypto import encrypt, decrypt, CryptoError
 logger = logging.getLogger(__name__)
 
 # Database schema version for migrations
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -30,7 +30,7 @@ class Subscriber:
     trade_amount_usdt: float
     max_leverage: int
     is_active: bool
-    trade_mode: str  # 'auto' or 'manual'
+    trade_mode: str  # 'AUTO' or 'MANUAL'
     created_at: datetime
     updated_at: datetime
     total_trades: int = 0
@@ -59,6 +59,7 @@ class Database:
         self._connection = await aiosqlite.connect(self.db_path)
         self._connection.row_factory = aiosqlite.Row
         await self._init_schema()
+        await self._run_migrations()
         logger.info(f"Database connected: {self.db_path}")
     
     async def close(self):
@@ -79,7 +80,7 @@ class Database:
                 trade_amount_usdt REAL DEFAULT 50.0,
                 max_leverage INTEGER DEFAULT 10,
                 is_active INTEGER DEFAULT 1,
-                trade_mode TEXT DEFAULT 'auto',
+                trade_mode TEXT DEFAULT 'AUTO',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 total_trades INTEGER DEFAULT 0,
@@ -124,6 +125,29 @@ class Database:
         """)
         await self._connection.commit()
     
+    async def _run_migrations(self):
+        """Run database migrations to fix any data issues."""
+        # Migration: Fix lowercase trade_mode values to uppercase
+        # This fixes the case sensitivity bug where 'auto' != 'AUTO'
+        result = await self._connection.execute("""
+            UPDATE subscribers 
+            SET trade_mode = UPPER(trade_mode) 
+            WHERE trade_mode != UPPER(trade_mode)
+        """)
+        if result.rowcount > 0:
+            logger.info(f"Migration: Fixed {result.rowcount} subscribers with lowercase trade_mode")
+        
+        # Also fix any NULL trade_mode values
+        result = await self._connection.execute("""
+            UPDATE subscribers 
+            SET trade_mode = 'AUTO' 
+            WHERE trade_mode IS NULL
+        """)
+        if result.rowcount > 0:
+            logger.info(f"Migration: Fixed {result.rowcount} subscribers with NULL trade_mode")
+        
+        await self._connection.commit()
+    
     async def add_subscriber(
         self,
         telegram_id: int,
@@ -147,8 +171,8 @@ class Database:
         await self._connection.execute("""
             INSERT INTO subscribers (
                 telegram_id, username, api_key_encrypted, api_secret_encrypted,
-                trade_amount_usdt, max_leverage, is_active, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                trade_amount_usdt, max_leverage, is_active, trade_mode, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, 'AUTO', ?, ?)
             ON CONFLICT(telegram_id) DO UPDATE SET
                 username = excluded.username,
                 api_key_encrypted = excluded.api_key_encrypted,
@@ -156,6 +180,7 @@ class Database:
                 trade_amount_usdt = excluded.trade_amount_usdt,
                 max_leverage = excluded.max_leverage,
                 is_active = 1,
+                trade_mode = COALESCE(UPPER(subscribers.trade_mode), 'AUTO'),
                 updated_at = excluded.updated_at
         """, (
             telegram_id, username, api_key_encrypted, api_secret_encrypted,
@@ -173,7 +198,7 @@ class Database:
             trade_amount_usdt=trade_amount_usdt,
             max_leverage=max_leverage,
             is_active=True,
-            trade_mode='auto',
+            trade_mode='AUTO',
             created_at=datetime.fromisoformat(now),
             updated_at=datetime.fromisoformat(now),
         )
@@ -190,6 +215,13 @@ class Database:
             return None
         
         try:
+            # Normalize trade_mode to uppercase for consistency
+            trade_mode = row["trade_mode"] if "trade_mode" in row.keys() else "AUTO"
+            if trade_mode:
+                trade_mode = trade_mode.upper()
+            else:
+                trade_mode = "AUTO"
+            
             return Subscriber(
                 telegram_id=row["telegram_id"],
                 username=row["username"],
@@ -198,7 +230,7 @@ class Database:
                 trade_amount_usdt=row["trade_amount_usdt"],
                 max_leverage=row["max_leverage"],
                 is_active=bool(row["is_active"]),
-                trade_mode=row.get("trade_mode", "auto") if hasattr(row, 'get') else (row["trade_mode"] if "trade_mode" in row.keys() else "auto"),
+                trade_mode=trade_mode,
                 created_at=datetime.fromisoformat(row["created_at"]),
                 updated_at=datetime.fromisoformat(row["updated_at"]),
                 total_trades=row["total_trades"],
@@ -217,6 +249,13 @@ class Database:
         ) as cursor:
             async for row in cursor:
                 try:
+                    # Normalize trade_mode to uppercase for consistency
+                    trade_mode = row["trade_mode"] if "trade_mode" in row.keys() else "AUTO"
+                    if trade_mode:
+                        trade_mode = trade_mode.upper()
+                    else:
+                        trade_mode = "AUTO"
+                    
                     subscribers.append(Subscriber(
                         telegram_id=row["telegram_id"],
                         username=row["username"],
@@ -225,7 +264,7 @@ class Database:
                         trade_amount_usdt=row["trade_amount_usdt"],
                         max_leverage=row["max_leverage"],
                         is_active=True,
-                        trade_mode=row["trade_mode"] if "trade_mode" in row.keys() else "auto",
+                        trade_mode=trade_mode,
                         created_at=datetime.fromisoformat(row["created_at"]),
                         updated_at=datetime.fromisoformat(row["updated_at"]),
                         total_trades=row["total_trades"],
