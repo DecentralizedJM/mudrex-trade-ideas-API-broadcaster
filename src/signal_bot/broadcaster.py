@@ -193,16 +193,25 @@ class SignalBroadcaster:
             if price_step <= 0:
                 return price
             
-            # Using decimal concept logic: round(value / step) * step
-            rounded = round(price / price_step) * price_step
+            # 1. Round to nearest step count
+            steps = round(price / price_step)
+            result = steps * price_step
             
-            # Determine precision
-            if '.' in str(price_step):
-                precision = len(str(price_step).split('.')[-1])
+            # 2. Determine precision for final rounding to remove float artifacts
+            # Handle scientific notation (e.g. 1e-05) correctly
+            import math
+            if price_step < 1:
+                # e.g. 0.0001 (10^-4) -> 4 decimal places
+                # Use a small epsilon for float stability
+                precision = int(math.ceil(abs(math.log10(price_step))))
             else:
-                precision = 0
-                
-            return round(rounded, precision)
+                # Steps >= 1 generally don't need decimal precision, but let's check
+                if '.' in str(price_step) and 'e' not in str(price_step).lower():
+                     precision = len(str(price_step).split('.')[-1])
+                else:
+                     precision = 0
+            
+            return round(result, precision)
         except Exception as e:
             logger.warning(f"Price rounding failed for {price} (step {price_step}): {e}")
             return price
