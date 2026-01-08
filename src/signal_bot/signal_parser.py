@@ -38,8 +38,8 @@ class Signal:
     symbol: str
     order_type: OrderType
     entry_price: Optional[float]  # None for market orders
-    stop_loss: float
-    take_profit: float
+    stop_loss: Optional[float]
+    take_profit: Optional[float]
     leverage: int
     raw_message: str
     timestamp: datetime
@@ -205,10 +205,11 @@ class SignalParser:
         leverage = cls._extract_param(params_text, 'lev')
         
         # Validate required fields
-        if stop_loss is None:
-            raise SignalParseError("Stop loss (sl) is required")
-        if take_profit is None:
-            raise SignalParseError("Take profit (tp) is required")
+        # SL/TP are now optional (can be NA or omitted) as per user request
+        # if stop_loss is None:
+        #     raise SignalParseError("Stop loss (sl) is required")
+        # if take_profit is None:
+        #     raise SignalParseError("Take profit (tp) is required")
         
         # If entry price is provided, it's a limit order
         if entry_price is not None:
