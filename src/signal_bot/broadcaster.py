@@ -115,7 +115,7 @@ class SignalBroadcaster:
             trade_results = []
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
-                    logger.error(f"Trade failed for subscriber: {result}")
+                    logger.error(f"Trade failed for subscriber {auto_subscribers[i].telegram_id}: {result}")
                     trade_results.append(TradeResult(
                         subscriber_id=auto_subscribers[i].telegram_id,
                         username=auto_subscribers[i].username,
@@ -123,6 +123,9 @@ class SignalBroadcaster:
                         message=str(result),
                     ))
                 else:
+                    # Log all non-success results for debugging
+                    if result.status != TradeStatus.SUCCESS:
+                        logger.warning(f"Trade {result.status.value} for {result.subscriber_id}: {result.message}")
                     trade_results.append(result)
             
             # Log summary
@@ -148,7 +151,7 @@ class SignalBroadcaster:
                 subscriber,
             )
         except Exception as e:
-            logger.error(f"Trade execution failed for {subscriber.telegram_id}: {e}")
+            logger.error(f"Trade execution failed for {subscriber.telegram_id}: {e}", exc_info=True)
             result = TradeResult(
                 subscriber_id=subscriber.telegram_id,
                 username=subscriber.username,
@@ -182,17 +185,21 @@ class SignalBroadcaster:
         Synchronous trade execution - runs in thread pool.
         This allows multiple trades to execute in parallel.
         """
+        logger.info(f"Executing trade for {subscriber.telegram_id}: {signal.symbol} {signal.signal_type.value}")
+        
         # Create SDK client for this subscriber (only api_secret needed)
         client = MudrexClient(
             api_secret=subscriber.api_secret
         )
         
         try:
-            # FIXED: Use get_futures_balance(), not get()
+            # Get balance
+            logger.info(f"Getting balance for {subscriber.telegram_id}...")
             balance_info = client.wallet.get_futures_balance()
             balance = float(balance_info.balance) if balance_info else 0.0
+            logger.info(f"Balance for {subscriber.telegram_id}: {balance} USDT")
             
-            # Check if balance is sufficient - include available_balance for potential reduced trade
+            # Check if balance is sufficient
             if balance < subscriber.trade_amount_usdt:
                 # Check if we have at least $1 to trade
                 if balance < 1.0:
@@ -217,20 +224,24 @@ class SignalBroadcaster:
                 )
             
             # Get asset details for quantity calculation
+            logger.info(f"Getting asset info for {signal.symbol}...")
             asset = client.assets.get(signal.symbol)
             if not asset:
+                logger.error(f"Symbol not found: {signal.symbol}")
                 return TradeResult(
                     subscriber_id=subscriber.telegram_id,
                     username=subscriber.username,
                     status=TradeStatus.SYMBOL_NOT_FOUND,
-                    message=f"Symbol not found: {signal.symbol}",
+                    message=f"Symbol not found on Mudrex: {signal.symbol}",
                     side=signal.signal_type.value,
                     order_type=signal.order_type.value,
                 )
             
+            logger.info(f"Asset info: quantity_step={asset.quantity_step}, min_qty={asset.min_quantity}")
+            
             # Set leverage (capped at subscriber's max)
             leverage = min(signal.leverage, subscriber.max_leverage)
-            # FIXED: leverage must be string, include margin_type
+            logger.info(f"Setting leverage to {leverage} for {signal.symbol}...")
             client.leverage.set(
                 symbol=signal.symbol,
                 leverage=str(leverage),
@@ -245,6 +256,8 @@ class SignalBroadcaster:
                 quantity_step=float(asset.quantity_step),
             )
             
+            logger.info(f"Calculated quantity: {qty} (actual value: ${actual_value:.2f}) for ${subscriber.trade_amount_usdt} at price {price}")
+            
             # Check minimum notional value (Mudrex requires ~$5 minimum)
             MIN_NOTIONAL_USDT = 5.0
             if actual_value < MIN_NOTIONAL_USDT:
@@ -252,7 +265,7 @@ class SignalBroadcaster:
                     subscriber_id=subscriber.telegram_id,
                     username=subscriber.username,
                     status=TradeStatus.API_ERROR,
-                    message=f"Trade amount ${subscriber.trade_amount_usdt:.2f} is below minimum ${MIN_NOTIONAL_USDT:.0f}. Use /setamount to increase.",
+                    message=f"Trade value ${actual_value:.2f} is below minimum ${MIN_NOTIONAL_USDT:.0f}. Use /setamount to increase (currently ${subscriber.trade_amount_usdt:.2f}).",
                     side=signal.signal_type.value,
                     order_type=signal.order_type.value,
                 )
@@ -265,7 +278,17 @@ class SignalBroadcaster:
                     subscriber_id=subscriber.telegram_id,
                     username=subscriber.username,
                     status=TradeStatus.API_ERROR,
-                    message=f"Quantity too small: {qty} < {asset.min_quantity}",
+                    message=f"Quantity {qty} is below minimum {min_qty} for {signal.symbol}",
+                    side=signal.signal_type.value,
+                    order_type=signal.order_type.value,
+                )
+            
+            if qty > max_qty:
+                return TradeResult(
+                    subscriber_id=subscriber.telegram_id,
+                    username=subscriber.username,
+                    status=TradeStatus.API_ERROR,
+                    message=f"Quantity {qty} exceeds maximum {max_qty} for {signal.symbol}",
                     side=signal.signal_type.value,
                     order_type=signal.order_type.value,
                 )
@@ -274,7 +297,6 @@ class SignalBroadcaster:
             side = "LONG" if signal.signal_type == SignalType.LONG else "SHORT"
             
             # Create order using SDK with proper quantity
-            # Note: SDK now auto-rounds quantity, so we can pass it directly
             qty_str = str(qty)
             
             logger.info(f"Creating order: symbol={signal.symbol}, side={side}, qty={qty_str}, leverage={leverage}, order_type={signal.order_type.value}, entry_price={signal.entry_price}")
@@ -296,6 +318,8 @@ class SignalBroadcaster:
                     quantity=qty_str,
                     leverage=str(leverage),
                 )
+            
+            logger.info(f"Order created: {order.order_id if order else 'None'}")
             
             # Set SL/TP after order is placed (more reliable than in initial order)
             sl_tp_set = False
@@ -344,17 +368,17 @@ class SignalBroadcaster:
             )
             
         except MudrexAPIError as e:
-            logger.error(f"Mudrex API error for {subscriber.telegram_id}: {e}")
+            logger.error(f"Mudrex API error for {subscriber.telegram_id}: {e}", exc_info=True)
             return TradeResult(
                 subscriber_id=subscriber.telegram_id,
                 username=subscriber.username,
                 status=TradeStatus.API_ERROR,
-                message=f"API error: {e}",
+                message=f"Mudrex API error: {e}",
                 side=signal.signal_type.value,
                 order_type=signal.order_type.value,
             )
         except Exception as e:
-            logger.error(f"Unexpected error for {subscriber.telegram_id}: {e}")
+            logger.error(f"Unexpected error for {subscriber.telegram_id}: {e}", exc_info=True)
             return TradeResult(
                 subscriber_id=subscriber.telegram_id,
                 username=subscriber.username,
@@ -425,10 +449,20 @@ class SignalBroadcaster:
 def format_broadcast_summary(signal: Signal, results: List[TradeResult], manual_count: int = 0) -> str:
     """Format broadcast results for admin notification."""
     success = sum(1 for r in results if r.status == TradeStatus.SUCCESS)
-    failed = sum(1 for r in results if r.status == TradeStatus.API_ERROR)
+    # Count all failure types
+    failed = sum(1 for r in results if r.status in (TradeStatus.API_ERROR, TradeStatus.SYMBOL_NOT_FOUND))
     insufficient = sum(1 for r in results if r.status == TradeStatus.INSUFFICIENT_BALANCE)
     
     manual_line = f"\n👆 Manual (awaiting): {manual_count}" if manual_count > 0 else ""
+    
+    # Add error details for debugging
+    error_details = ""
+    failed_results = [r for r in results if r.status in (TradeStatus.API_ERROR, TradeStatus.SYMBOL_NOT_FOUND)]
+    if failed_results:
+        error_details = "\n\n**Errors:**\n"
+        for r in failed_results[:3]:  # Show max 3 errors
+            safe_msg = r.message[:100] if r.message else "Unknown error"
+            error_details += f"• @{r.username or r.subscriber_id}: {safe_msg}\n"
     
     return f"""
 📡 **Signal Broadcast Complete**
@@ -439,7 +473,7 @@ def format_broadcast_summary(signal: Signal, results: List[TradeResult], manual_
 **Results:**
 ✅ Success: {success}
 💰 Insufficient Balance: {insufficient}
-❌ Failed: {failed}{manual_line}
+❌ Failed: {failed}{manual_line}{error_details}
 ━━━━━━━━━━━━━━━━━━━━
 Total: {len(results) + manual_count} subscribers
 """.strip()
@@ -472,6 +506,17 @@ def format_user_trade_notification(signal: Signal, result: TradeResult) -> str:
 {result.message}
 
 Top up your Mudrex wallet to receive future signals.
+━━━━━━━━━━━━━━━━━━━━
+""".strip()
+    
+    elif result.status == TradeStatus.SYMBOL_NOT_FOUND:
+        return f"""
+⚠️ **Trade Failed - Symbol Not Found**
+━━━━━━━━━━━━━━━━━━━━
+🆔 Signal: `{signal.signal_id}`
+📊 {signal.signal_type.value} {signal.symbol}
+
+The symbol `{signal.symbol}` is not available on Mudrex Futures.
 ━━━━━━━━━━━━━━━━━━━━
 """.strip()
     
