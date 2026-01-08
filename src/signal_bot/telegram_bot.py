@@ -163,8 +163,9 @@ class SignalBot:
         await update.message.reply_text(
             "🔑 **Registration Step 1/3**\n\n"
             "Please send your **Mudrex API Key**.\n\n"
-            "You can get this from:\n"
-            "Mudrex → Settings → API Keys\n\n"
+            "You can get your Mudrex API key from the Mudrex Website.\n"
+            "**Note:** API keys can only be created via desktop.\n"
+            "Login to https://mudrex.com/pro-trading via desktop and generate your key.\n\n"
             "🔒 Your API key is secured with bank-level encryption.\n\n"
             "/cancel to abort",
             parse_mode="Markdown"
