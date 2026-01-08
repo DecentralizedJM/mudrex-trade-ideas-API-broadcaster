@@ -261,7 +261,20 @@ class SignalBroadcaster:
             )
             
             # Calculate proper coin quantity from USD amount using SDK helper
-            price = signal.entry_price if signal.entry_price else 1.0
+            price = None
+            if signal.entry_price:
+                price = signal.entry_price
+            elif hasattr(asset, 'price') and asset.price:
+                try:
+                    price = float(asset.price)
+                except (ValueError, TypeError):
+                    pass
+            
+            if not price:
+                logger.warning(f"Could not determine price for {signal.symbol}, defaulting to 1.0 (WARNING: This may cause incorrect quantity)")
+                price = 1.0
+            
+            logger.info(f"Using calculation price: {price} for {signal.symbol}")
             
             # Round price to asset's price_step (tick size) to avoid API errors
             if hasattr(asset, 'price_step') and asset.price_step:
@@ -317,6 +330,16 @@ class SignalBroadcaster:
                 logger.info(f"Adjusted to {qty} {signal.symbol} (${actual_value:.2f}) to meet minimum value")
             
             # Validate against min/max
+            if qty <= 0:
+                 return TradeResult(
+                    subscriber_id=subscriber.telegram_id,
+                    username=subscriber.username,
+                    status=TradeStatus.API_ERROR,
+                    message=f"Calculated quantity is 0 (Price: {price}, Value: ${actual_value:.5f}) - trade amount too low for this asset",
+                    side=signal.signal_type.value,
+                    order_type=signal.order_type.value,
+                )
+
             min_qty = float(asset.min_quantity)
             max_qty = float(asset.max_quantity)
             if qty < min_qty:
