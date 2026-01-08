@@ -210,25 +210,23 @@ class SignalBroadcaster:
             balance = float(balance_info.balance) if balance_info else 0.0
             logger.info(f"Balance for {subscriber.telegram_id}: {balance} USDT")
             
-            # Determine trade amount - use available balance if set amount not available
-            # but balance meets minimum requirement ($5)
-            MIN_TRADE_USDT = 5.0
+            # Determine trade amount - use available balance if set amount exceeds balance
             trade_amount = subscriber.trade_amount_usdt
             
             if balance < subscriber.trade_amount_usdt:
-                # Check if we have at least minimum to trade
-                if balance < MIN_TRADE_USDT:
+                # Check if we have any balance at all
+                if balance <= 0:
                     return TradeResult(
                         subscriber_id=subscriber.telegram_id,
                         username=subscriber.username,
                         status=TradeStatus.INSUFFICIENT_BALANCE,
-                        message=f"Balance {balance:.2f} USDT is below minimum {MIN_TRADE_USDT:.0f} USDT required",
+                        message=f"No balance available (0 USDT)",
                         side=signal.signal_type.value,
                         order_type=signal.order_type.value,
                         available_balance=balance,
                     )
-                # Auto-use available balance since it meets minimum
-                logger.info(f"Auto-adjusting trade amount from {subscriber.trade_amount_usdt} to {balance:.2f} USDT (available balance)")
+                # Auto-use available balance (no minimum required)
+                logger.info(f"Auto-adjusting trade amount from {subscriber.trade_amount_usdt} to {balance:.2f} USDT (using available balance)")
                 trade_amount = balance
             
             # Get asset details for quantity calculation
@@ -265,18 +263,6 @@ class SignalBroadcaster:
             )
             
             logger.info(f"Calculated quantity: {qty} (actual value: ${actual_value:.2f}) for ${trade_amount} at price {price}")
-            
-            # Check minimum notional value (Mudrex requires ~$5 minimum)
-            MIN_NOTIONAL_USDT = 5.0
-            if actual_value < MIN_NOTIONAL_USDT:
-                return TradeResult(
-                    subscriber_id=subscriber.telegram_id,
-                    username=subscriber.username,
-                    status=TradeStatus.API_ERROR,
-                    message=f"Trade value {actual_value:.2f} USD is below minimum {MIN_NOTIONAL_USDT:.0f} USD. Use /setamount to increase (currently {subscriber.trade_amount_usdt:.2f} USD).",
-                    side=signal.signal_type.value,
-                    order_type=signal.order_type.value,
-                )
             
             # Validate against min/max
             min_qty = float(asset.min_quantity)
