@@ -165,7 +165,7 @@ class SignalBot:
             "Please send your **Mudrex API Key**.\n\n"
             "You can get this from:\n"
             "Mudrex → Settings → API Keys\n\n"
-            "🔒 Your key will be encrypted.\n\n"
+            "🔒 Your API key is secured with bank-level encryption.\n\n"
             "/cancel to abort",
             parse_mode="Markdown"
         )
@@ -196,7 +196,7 @@ class SignalBot:
             "✅ API Key received!\n\n"
             "🔐 **Registration Step 2/3**\n\n"
             "Now send your **Mudrex API Secret**.\n\n"
-            "🔒 Your secret will be encrypted.\n\n"
+            "🔒 Your secret is secured with bank-level encryption.\n\n"
             "/cancel to abort",
             parse_mode="Markdown"
         )
@@ -354,11 +354,12 @@ class SignalBot:
                 f"⚠️ IMPORTANT WARNING ⚠️\n"
                 f"When Mudrex Trading Team publishes a trade idea, "
                 f"it will be AUTO-EXECUTED in your Mudrex Futures account!\n\n"
-                f"💰 **Minimum Value Requirement**:\n"
+                f"💰 Minimum Value Requirement:\n"
                 f"Mudrex requires a minimum order value of ~$7-8 per trade.\n"
                 f"Assets like BTC/ETH may require higher margins at lower leverage.\n"
-                f"👉 **Recommendation**: set at least **20-25 USDT** per trade to ensure successful execution.\n\n"
-                f"📊 Your funds are at risk. Only use amounts you can afford to lose.\n\n"
+                f"👉 Recommendation: set at least 20-25 USDT per trade to ensure successful execution.\n\n"
+                f"The trades are handled by Mudrex Research desk, and your live funds will be used. "
+                f"While we try to maintain better winrates losses can happen, use amounts only if you can afford to lose.\n\n"
                 f"Commands:\n"
                 f"/status - View your settings\n"
                 f"/setamount - Change trade amount\n"
