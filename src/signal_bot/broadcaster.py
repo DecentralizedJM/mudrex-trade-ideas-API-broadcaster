@@ -210,29 +210,26 @@ class SignalBroadcaster:
             balance = float(balance_info.balance) if balance_info else 0.0
             logger.info(f"Balance for {subscriber.telegram_id}: {balance} USDT")
             
-            # Check if balance is sufficient
+            # Determine trade amount - use available balance if set amount not available
+            # but balance meets minimum requirement ($5)
+            MIN_TRADE_USDT = 5.0
+            trade_amount = subscriber.trade_amount_usdt
+            
             if balance < subscriber.trade_amount_usdt:
-                # Check if we have at least $1 to trade
-                if balance < 1.0:
+                # Check if we have at least minimum to trade
+                if balance < MIN_TRADE_USDT:
                     return TradeResult(
                         subscriber_id=subscriber.telegram_id,
                         username=subscriber.username,
                         status=TradeStatus.INSUFFICIENT_BALANCE,
-                        message=f"Balance too low: {balance:.2f} USDT (min 1 required)",
+                        message=f"Balance {balance:.2f} USDT is below minimum {MIN_TRADE_USDT:.0f} USDT required",
                         side=signal.signal_type.value,
                         order_type=signal.order_type.value,
                         available_balance=balance,
                     )
-                # We have some balance, return with available amount for user to decide
-                return TradeResult(
-                    subscriber_id=subscriber.telegram_id,
-                    username=subscriber.username,
-                    status=TradeStatus.INSUFFICIENT_BALANCE,
-                    message=f"Requested: {subscriber.trade_amount_usdt} USDT, Available: {balance:.2f} USDT",
-                    side=signal.signal_type.value,
-                    order_type=signal.order_type.value,
-                    available_balance=balance,
-                )
+                # Auto-use available balance since it meets minimum
+                logger.info(f"Auto-adjusting trade amount from {subscriber.trade_amount_usdt} to {balance:.2f} USDT (available balance)")
+                trade_amount = balance
             
             # Get asset details for quantity calculation
             logger.info(f"Getting asset info for {signal.symbol}...")
@@ -262,12 +259,12 @@ class SignalBroadcaster:
             # Calculate proper coin quantity from USD amount using SDK helper
             price = signal.entry_price if signal.entry_price else 1.0
             qty, actual_value = calculate_order_from_usd(
-                usd_amount=subscriber.trade_amount_usdt,
+                usd_amount=trade_amount,
                 price=price,
                 quantity_step=float(asset.quantity_step),
             )
             
-            logger.info(f"Calculated quantity: {qty} (actual value: ${actual_value:.2f}) for ${subscriber.trade_amount_usdt} at price {price}")
+            logger.info(f"Calculated quantity: {qty} (actual value: ${actual_value:.2f}) for ${trade_amount} at price {price}")
             
             # Check minimum notional value (Mudrex requires ~$5 minimum)
             MIN_NOTIONAL_USDT = 5.0
