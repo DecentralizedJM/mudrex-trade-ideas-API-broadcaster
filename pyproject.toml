@@ -31,7 +31,7 @@ dependencies = [
     "httpx>=0.24.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
-    "mudrex-trading-sdk @ git+https://github.com/DecentralizedJM/mudrex-api-trading-python-sdk.git@2ecd4c2",
+    "mudrex-trading-sdk @ git+https://github.com/DecentralizedJM/mudrex-api-trading-python-sdk.git@878c724",
 ]
 
 [project.optional-dependencies]

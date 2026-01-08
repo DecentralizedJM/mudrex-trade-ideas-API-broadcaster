@@ -262,6 +262,22 @@ class SignalBroadcaster:
             
             # Calculate proper coin quantity from USD amount using SDK helper
             price = signal.entry_price if signal.entry_price else 1.0
+            
+            # Round price to asset's price_step (tick size) to avoid API errors
+            if hasattr(asset, 'price_step') and asset.price_step:
+                try:
+                    price_step = float(asset.price_step)
+                    if price_step > 0:
+                        original_price = price
+                        rounded_price = round(price / price_step) * price_step
+                        # Determine precision from price_step
+                        price_precision = len(str(asset.price_step).split('.')[-1]) if '.' in str(asset.price_step) else 0
+                        price = round(rounded_price, price_precision)
+                        if price != original_price:
+                            logger.info(f"Rounded price from {original_price} to {price} (step: {asset.price_step})")
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Could not round price: {e}")
+            
             qty, actual_value = calculate_order_from_usd(
                 usd_amount=trade_amount,
                 price=price,
@@ -299,7 +315,7 @@ class SignalBroadcaster:
             # Create order using SDK with proper quantity
             qty_str = str(qty)
             
-            logger.info(f"Creating order: symbol={signal.symbol}, side={side}, qty={qty_str}, leverage={leverage}, order_type={signal.order_type.value}, entry_price={signal.entry_price}")
+            logger.info(f"Creating order: symbol={signal.symbol}, side={side}, qty={qty_str}, leverage={leverage}, order_type={signal.order_type.value}, entry_price={price}")
             
             if signal.order_type == OrderType.MARKET:
                 # Market order
@@ -314,7 +330,7 @@ class SignalBroadcaster:
                 order = client.orders.create_limit_order(
                     symbol=signal.symbol,
                     side=side,
-                    price=str(signal.entry_price),
+                    price=str(price),
                     quantity=qty_str,
                     leverage=str(leverage),
                 )
