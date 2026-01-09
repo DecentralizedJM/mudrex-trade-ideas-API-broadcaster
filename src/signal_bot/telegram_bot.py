@@ -11,7 +11,8 @@ This bot:
 import asyncio
 import json
 import logging
-from typing import Optional
+from typing import Optional, Dict, List
+from datetime import datetime, timedelta
 
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -70,6 +71,8 @@ class SignalBot:
         self.broadcaster = SignalBroadcaster(database)
         self.app: Optional[Application] = None
         self.bot: Optional[Bot] = None
+        # Rate limiting: user_id -> list of timestamps
+        self._register_attempts: Dict[int, List[datetime]] = {}
         
         logger.info(f"SignalBot initialized - Admin: {settings.admin_telegram_id}")
     
@@ -171,6 +174,25 @@ class SignalBot:
                 "❌ Registration is currently closed."
             )
             return ConversationHandler.END
+            
+        # Rate limiting: 5 attempts per 10 minutes
+        user_id = update.effective_user.id
+        now = datetime.now()
+        
+        # Clean up old attempts
+        if user_id in self._register_attempts:
+            self._register_attempts[user_id] = [
+                t for t in self._register_attempts[user_id] 
+                if now - t < timedelta(minutes=10)
+            ]
+        else:
+            self._register_attempts[user_id] = []
+            
+        if len(self._register_attempts[user_id]) >= 5:
+            await update.message.reply_text("⚠️ Too many registration attempts. Please wait 10 minutes.")
+            return ConversationHandler.END
+            
+        self._register_attempts[user_id].append(now)
         
         # Check if already registered
         subscriber = await self.db.get_subscriber(update.effective_user.id)
