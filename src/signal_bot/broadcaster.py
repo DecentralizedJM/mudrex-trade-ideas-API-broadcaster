@@ -430,6 +430,19 @@ class SignalBroadcaster:
             logger.error(f"  Error code: {error_code}, Status: {status_code}, Request ID: {request_id}")
             logger.error(f"  Full error: {repr(e)}")
             
+            # Check for insufficient balance in API error
+            if "insufficient balance" in error_msg.lower() or "not enough balance" in error_msg.lower():
+                return TradeResult(
+                    subscriber_id=subscriber.telegram_id,
+                    username=subscriber.username,
+                    status=TradeStatus.INSUFFICIENT_BALANCE,
+                    message=f"Insufficient balance in Mudrex Futures wallet",
+                    side=signal.signal_type.value,
+                    order_type=signal.order_type.value,
+                    entry_price=signal.entry_price or 0.0,
+                    available_balance=available_balance,
+                )
+
             # Include more context in the error message
             detailed_msg = f"Mudrex API error: {e.message if hasattr(e, 'message') else error_msg} | Code: {error_code} | Status: {status_code}"
             
@@ -456,17 +469,119 @@ class SignalBroadcaster:
         """
         Broadcast a close signal to all subscribers.
         
-        Note: This is more complex as we need to track which subscribers
-        have open positions for this signal. For MVP, we'll mark the signal
-        as closed and subscribers can manage manually.
+        Fetches open positions for each subscriber and closes them if they match the signal symbol.
         """
         logger.info(f"Broadcasting close for signal {close.signal_id}")
         
+        active_subscribers = await self.db.get_active_subscribers()
+        
+        async def _close_for_subscriber(subscriber: Subscriber) -> TradeResult:
+            if subscriber.trade_mode != 'AUTO':
+                return TradeResult(
+                    subscriber_id=subscriber.telegram_id,
+                    username=subscriber.username,
+                    status=TradeStatus.SKIPPED,
+                    message="Manual mode - Please close manually",
+                    side="CLOSE",
+                    order_type="MARKET",
+                    quantity="0",
+                    actual_value=0.0
+                )
+
+            try:
+                client = MudrexClient(api_secret=subscriber.api_secret)
+                
+                # List open positions
+                positions = await asyncio.to_thread(client.positions.list_open)
+                
+                # Find position for this symbol
+                target_pos = next((p for p in positions if p.symbol == close.symbol), None)
+                
+                if not target_pos:
+                    return TradeResult(
+                        subscriber_id=subscriber.telegram_id,
+                        username=subscriber.username,
+                        status=TradeStatus.SKIPPED,
+                        message="No open position found",
+                        side="CLOSE",
+                        order_type="MARKET",
+                        quantity="0",
+                        actual_value=0.0
+                    )
+                
+                # Execute Close
+                if close.percentage == 100:
+                    success = await asyncio.to_thread(client.positions.close, target_pos.position_id)
+                    action_msg = "Closed Position"
+                else:
+                    # Partial Close
+                    asset = await asyncio.to_thread(client.assets.get, close.symbol)
+                    qty_step = float(asset.quantity_step) if asset and asset.quantity_step else None
+                    
+                    current_qty = float(target_pos.quantity)
+                    close_qty = current_qty * (close.percentage / 100.0)
+                    
+                    if qty_step:
+                         close_qty = round(close_qty / qty_step) * qty_step
+                         import math
+                         if qty_step < 1:
+                            precision = int(abs(math.log10(qty_step))) 
+                         else:
+                            precision = 0 
+                         close_qty_str = f"{close_qty:.{precision}f}"
+                    else:
+                         close_qty_str = str(close_qty)
+
+                    success_obj = await asyncio.to_thread(
+                        client.positions.close_partial, 
+                        target_pos.position_id, 
+                        close_qty_str
+                    )
+                    success = True if success_obj else False
+                    action_msg = f"Closed {close.percentage}%"
+
+                if success:
+                    return TradeResult(
+                        subscriber_id=subscriber.telegram_id,
+                        username=subscriber.username,
+                        status=TradeStatus.SUCCESS,
+                        message=f"{action_msg}",
+                        side="CLOSE",
+                        order_type="MARKET",
+                        quantity=target_pos.quantity,
+                        actual_value=0.0
+                    )
+                else:
+                    return TradeResult(
+                        subscriber_id=subscriber.telegram_id,
+                        username=subscriber.username,
+                        status=TradeStatus.API_ERROR,
+                        message="Failed to close position via API",
+                        side="CLOSE",
+                        order_type="MARKET",
+                        quantity="0",
+                        actual_value=0.0
+                    )
+
+            except Exception as e:
+                logger.error(f"Failed to close position for {subscriber.telegram_id}: {e}")
+                return TradeResult(
+                    subscriber_id=subscriber.telegram_id,
+                    username=subscriber.username,
+                    status=TradeStatus.API_ERROR,
+                    message=f"Close Error: {e}",
+                    side="CLOSE",
+                    order_type="MARKET",
+                    quantity="0",
+                    actual_value=0.0
+                )
+
+        tasks = [_close_for_subscriber(sub) for sub in active_subscribers]
+        results = await asyncio.gather(*tasks)
+        
         await self.db.close_signal(close.signal_id)
         
-        # For MVP, just mark as closed. Position closing would require
-        # tracking position IDs per subscriber, which we can add later.
-        return []
+        return results
     
     async def execute_single_trade(self, signal: Signal, subscriber: Subscriber) -> TradeResult:
         """

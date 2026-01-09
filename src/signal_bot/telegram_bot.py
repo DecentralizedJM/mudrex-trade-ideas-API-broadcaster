@@ -838,12 +838,50 @@ Would you like to execute this trade with your available balance instead?
     
     async def _handle_close_signal(self, message, close: SignalClose):
         """Handle a close signal from admin."""
-        await self.broadcaster.broadcast_close(close)
+        # Broadcast close and get results
+        results = await self.broadcaster.broadcast_close(close)
+        
+        # Notify Admin
+        success_count = sum(1 for r in results if r.status == TradeStatus.SUCCESS)
+        skipped_count = sum(1 for r in results if r.status == TradeStatus.SKIPPED)
+        failed_count = sum(1 for r in results if r.status == TradeStatus.API_ERROR)
+        
         await message.reply_text(
-            f"✅ Signal `{close.signal_id}` marked as closed.\n\n"
-            f"Subscribers have been notified.",
-            parse_mode="Markdown"
+             f"✅ Signal `{close.signal_id}` Closed\n"
+             f"━━━━━━━━━━━━━━━━━━━━\n"
+             f"✅ Success: {success_count}\n"
+             f"⏭️ Skipped: {skipped_count}\n"
+             f"❌ Failed: {failed_count}",
+             parse_mode="Markdown"
         )
+        
+        # Notify Users
+        for result in results:
+             if result.status == TradeStatus.SKIPPED:
+                 continue
+             
+             # Notify Success or Failure
+             notification = f"🔔 **Position Closed**\n" \
+                            f"━━━━━━━━━━━━━━━━━━━━\n" \
+                            f"🆔 Signal: `{close.signal_id}`\n" \
+                            f"📊 {close.symbol}\n\n"
+                            
+             if result.status == TradeStatus.SUCCESS:
+                 notification += f"✅ {result.message}\n"
+             else:
+                 notification += f"❌ Failed to close: {result.message}\n" \
+                                 f"⚠️ Please check Mudrex manually."
+             
+             notification += "━━━━━━━━━━━━━━━━━━━━"
+             
+             try:
+                 await self.bot.send_message(
+                     chat_id=result.subscriber_id,
+                     text=notification,
+                     parse_mode="Markdown"
+                 )
+             except Exception as e:
+                 logger.error(f"Failed to notify close to {result.subscriber_id}: {e}")
     
     # ==================== Channel Signal Command ====================
     
