@@ -533,8 +533,11 @@ class SignalBroadcaster:
                         actual_value=0.0
                     )
                 
+                # Determine percentage
+                percentage = close.partial_percent if close.partial_percent is not None else 100.0
+                
                 # Execute Close
-                if close.percentage == 100:
+                if percentage == 100:
                     success = await asyncio.to_thread(client.positions.close, target_pos.position_id)
                     action_msg = "Closed Position"
                 else:
@@ -543,7 +546,7 @@ class SignalBroadcaster:
                     qty_step = float(asset.quantity_step) if asset and asset.quantity_step else None
                     
                     current_qty = float(target_pos.quantity)
-                    close_qty = current_qty * (close.percentage / 100.0)
+                    close_qty = current_qty * (percentage / 100.0)
                     
                     if qty_step:
                          close_qty = round(close_qty / qty_step) * qty_step
