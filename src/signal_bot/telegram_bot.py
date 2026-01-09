@@ -585,7 +585,22 @@ class SignalBot:
         # Accept signals from:
         # 1. Admin's DM
         # 2. The designated signal channel (regardless of from_user - channel posts may not have it)
-        if not is_admin_dm and not is_signal_channel:
+        if is_admin_dm:
+            # Always allow admin DM
+            pass
+        elif is_signal_channel:
+             # If it's a group, verify the user is an admin
+             if message.chat.type in [Chat.GROUP, Chat.SUPERGROUP]:
+                 try:
+                     member = await message.chat.get_member(user_id)
+                     if member.status not in ['creator', 'administrator']:
+                         logger.warning(f"Ignored command from non-admin {user_id} in group")
+                         return
+                 except Exception as e:
+                     logger.error(f"Failed to check admin status: {e}")
+                     return
+        else:
+            # Not admin DM and not signal channel
             logger.debug(f"Ignoring message - not from admin DM or signal channel")
             return
         
