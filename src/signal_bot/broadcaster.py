@@ -70,6 +70,9 @@ class SignalBroadcaster:
     Executes trades in parallel for all active subscribers using the Mudrex SDK.
     """
     
+    # Minimum order value required by Mudrex (in USDT)
+    MIN_ORDER_VALUE = 8.0
+    
     def __init__(self, database: Database):
         self.db = database
     
@@ -277,8 +280,8 @@ class SignalBroadcaster:
                     order_type=signal.order_type.value,
                 )
 
-            # Set leverage (capped at subscriber's max)
-            leverage = min(signal.leverage, subscriber.max_leverage)
+            # Set leverage (capped at subscriber's max, minimum 1)
+            leverage = max(1, min(signal.leverage, subscriber.max_leverage))
             logger.info(f"Setting leverage to {leverage} for {signal.symbol}...")
             client.leverage.set(
                 symbol=signal.symbol,
@@ -335,12 +338,11 @@ class SignalBroadcaster:
             
             logger.info(f"Calculated Qty: {qty} (Value: ${actual_value:.2f})")
 
-            # Enforce Minimum Order Value ($8 Notional)
-            MIN_ORDER_VALUE = 8.0
-            if actual_value < MIN_ORDER_VALUE:
-                logger.info(f"Value ${actual_value:.2f} < Min ${MIN_ORDER_VALUE}. Adjusting...")
+            # Enforce Minimum Order Value (Mudrex requirement)
+            if actual_value < self.MIN_ORDER_VALUE:
+                logger.info(f"Value ${actual_value:.2f} < Min ${self.MIN_ORDER_VALUE}. Adjusting...")
                 qty, actual_value = calculate_order_from_usd(
-                    usd_amount=MIN_ORDER_VALUE,
+                    usd_amount=self.MIN_ORDER_VALUE,
                     price=price,
                     quantity_step=float(asset.quantity_step),
                 )

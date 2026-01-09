@@ -1,4 +1,6 @@
 """
+DEPRECATED: This module is not used. Trade execution is handled by broadcaster.py
+
 Trade Executor - Execute trades on Mudrex using the SDK.
 
 Handles:

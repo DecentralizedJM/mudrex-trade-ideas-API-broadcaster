@@ -1,4 +1,6 @@
 """
+DEPRECATED: This module is not currently used. Position tracking is handled by database.py
+
 Position Tracker - Track active signals and their corresponding positions.
 
 Maps signal IDs to Mudrex position/order IDs for updates and closes.

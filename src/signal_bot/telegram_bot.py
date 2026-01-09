@@ -14,7 +14,7 @@ import logging
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
 
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, Chat
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -44,6 +44,15 @@ from .database import Database
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
+
+# Telegram message limits
+MAX_MESSAGE_LENGTH = 4096
+
+def truncate_message(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> str:
+    """Truncate message to Telegram's limit with ellipsis."""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length - 20] + "\n\n... (truncated)"
 
 # Conversation states for registration
 AWAITING_API_KEY, AWAITING_API_SECRET, AWAITING_AMOUNT = range(3)

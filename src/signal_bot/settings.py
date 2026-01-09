@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     # Trading defaults
     default_trade_amount: float = Field(50.0, env="DEFAULT_TRADE_AMOUNT")
     default_max_leverage: int = Field(10, env="DEFAULT_MAX_LEVERAGE")
+    min_order_value: float = Field(8.0, env="MIN_ORDER_VALUE")
     
     # Feature flags
     allow_registration: bool = Field(True, env="ALLOW_REGISTRATION")
