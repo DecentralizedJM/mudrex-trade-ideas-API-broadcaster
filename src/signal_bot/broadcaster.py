@@ -30,6 +30,7 @@ class TradeStatus(Enum):
     INSUFFICIENT_BALANCE = "INSUFFICIENT_BALANCE"
     SYMBOL_NOT_FOUND = "SYMBOL_NOT_FOUND"
     API_ERROR = "API_ERROR"
+    INVALID_KEY = "INVALID_KEY"
     SKIPPED = "SKIPPED"
     PENDING_CONFIRMATION = "PENDING_CONFIRMATION"
 
@@ -444,7 +445,19 @@ class SignalBroadcaster:
                     available_balance=balance,
                 )
 
-            # 2. Check for Symbol Not Found
+            # 2. Check for Auth Errors
+            if status_code in (401, 403) or "auth" in msg_lower or "unauthorized" in msg_lower or "forbidden" in msg_lower or "signature" in msg_lower or "api key" in msg_lower:
+                 return TradeResult(
+                    subscriber_id=subscriber.telegram_id,
+                    username=subscriber.username,
+                    status=TradeStatus.INVALID_KEY,
+                    message="❌ Authorization Failed: Your API Key appears invalid or expired. Please /unregister and register again.",
+                    side=signal.signal_type.value,
+                    order_type=signal.order_type.value,
+                    entry_price=signal.entry_price or 0.0,
+                )
+
+            # 3. Check for Symbol Not Found
             if status_code == 404 or "symbol" in msg_lower or "pair" in msg_lower or "not found" in msg_lower:
                  return TradeResult(
                     subscriber_id=subscriber.telegram_id,
