@@ -646,8 +646,8 @@ class SignalBot:
                     and result.available_balance >= 1.0):
                     # Offer to trade with available balance
                     await self._send_reduced_balance_offer(signal, result)
-                elif result.status != TradeStatus.SKIPPED:
-                    # Notify for all non-skipped results (SUCCESS, FAILURE, ERROR)
+                elif result.status in [TradeStatus.SUCCESS, TradeStatus.INSUFFICIENT_BALANCE]:
+                    # Notify only for SUCCESS or INSUFFICIENT_BALANCE (hide API errors from users)
                     # Broadcaster ensures messages are sanitized and human-readable
                     notification = format_user_trade_notification(signal, result)
                     await self.bot.send_message(
