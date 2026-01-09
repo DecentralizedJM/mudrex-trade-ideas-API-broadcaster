@@ -146,6 +146,22 @@ class SignalBot:
         chat_id = update.effective_chat.id
         await update.message.reply_text(f"🆔 Chat ID: `{chat_id}`", parse_mode="Markdown")
 
+
+    async def welcome_new_chat_members(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Welcome new members and share Chat ID if bot is added."""
+        if not update.message.new_chat_members:
+            return
+
+        for user in update.message.new_chat_members:
+            if user.id == context.bot.id:
+                chat_id = update.effective_chat.id
+                await update.message.reply_text(
+                    f"👋 **Mudrex Bot Added!**\n\n"
+                    f"🆔 Chat ID: `{chat_id}`\n\n"
+                    f"Please configure this ID in your Railway settings (`SIGNAL_CHANNEL_ID`) to use this group for signals.",
+                    parse_mode="Markdown"
+                )
+
     # ==================== Registration Flow ====================
     
     async def register_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1104,6 +1120,12 @@ Would you like to execute this trade with your available balance instead?
             filters.TEXT & (filters.ChatType.PRIVATE | filters.ChatType.CHANNEL | filters.ChatType.GROUPS),
             self.handle_signal_message
         ), group=1)
+        
+        # Welcome handler for when bot is added to group
+        self.app.add_handler(MessageHandler(
+            filters.StatusUpdate.NEW_CHAT_MEMBERS,
+            self.welcome_new_chat_members
+        ))
         
         return self.app
     
